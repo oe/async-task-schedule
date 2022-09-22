@@ -1,9 +1,9 @@
 # async-task-schedule
 schedule async tasks in order
 
-## Feature
-* remove duplicated task request
-* combine tasks request in same time and do all together
+## Features
+* remove duplicated tasks' requests
+* combine tasks' requests in same time and do all together
 * cache result and can specify validity
 
 
