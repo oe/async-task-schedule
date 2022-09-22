@@ -1,0 +1,29 @@
+{
+  "name": "async-task-schedule",
+  "version": "0.0.1",
+  "description": "schedule async tasks",
+  "main": "dist/index.js",
+  "module": "dist/index.es.js",
+  "types": "dist/types.d.ts",
+  "scripts": {
+    "prebuild": "yarn clean",
+    "build": "parcel build --no-source-maps",
+    "clean": "rimraf dist",
+    "test": "jest"
+  },
+  "repository": "https://github.com/oe/async-task-schedule.git",
+  "author": "Saiya <oklark@outlook.com>",
+  "license": "MIT",
+  "private": false,
+  "source": "src/index.ts",
+  "devDependencies": {
+    "@parcel/packager-ts": "2.7.0",
+    "@parcel/transformer-typescript-types": "2.7.0",
+    "@types/jest": "^29.0.3",
+    "jest": "^29.0.3",
+    "parcel": "^2.7.0",
+    "rimraf": "^3.0.2",
+    "ts-jest": "^29.0.1",
+    "typescript": ">=3.0.0"
+  }
+}
