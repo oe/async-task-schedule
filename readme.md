@@ -1,4 +1,21 @@
 # async-task-schedule
+
+
+<div align="center">
+  <a href="https://github.com/oe/async-task-schedule/actions">
+    <img src="https://github.com/oe/async-task-schedule/actions/workflows/main.yml/badge.svg" alt="github actions">
+  </a>
+  <a href="#readme">
+    <img src="https://badgen.net/badge/Built%20With/TypeScript/blue" alt="code with typescript" height="20">
+  </a>
+  <a href="#readme">
+    <img src="https://badge.fury.io/js/async-task-schedule.svg" alt="npm version" height="20">
+  </a>
+  <a href="https://www.npmjs.com/package/async-task-schedule">
+    <img src="https://img.shields.io/npm/dm/async-task-schedule.svg" alt="npm downloads" height="20">
+  </a>
+</div>
+
 schedule async tasks in order
 
 ## Features
