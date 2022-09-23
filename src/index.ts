@@ -4,9 +4,16 @@ export default class AsyncTask<Task, Result> {
    *  Task: single task request info
    *  Result: single task success response
    * 
-   * batchDoTasks should receive multi tasks, and return tuple of task and response in array
+   * batchDoTasks should receive multi tasks, and return tuple of task and response or error in array
    */
   private batchDoTasks: (tasks: Task[]) => Promise<Array<[Task, Result | Error ]>>
+
+  /**
+   * check whether two tasks are equal
+   *  it helps to avoid duplicated tasks
+   *  default: (a, b) => a === b
+   */
+  private isSameTask: (a: Task, b: Task) => boolean
 
   /**
    * max task count for batchDoTasks, default unlimited
@@ -17,8 +24,11 @@ export default class AsyncTask<Task, Result> {
   /**
    * do batch tasks executing strategy, default parallel
    *  only works if maxBatchCount is specified and tasks more than maxBatchCount are executed
+   *  
    * parallel: split all tasks into a list stride by maxBatchCount, exec them at the same time
-   * serial: split all tasks into a list stride by maxBatchCount, exec theme one by one
+   * serial: split all tasks into a list stride by maxBatchCount, exec theme one group by one group
+   *    if serial specified, when tasks are executing, new comings will wait for them to complete
+   *    it's very useful to cool down task requests
    */
   private taskExecStrategy: 'parallel' | 'serial'
 
@@ -47,13 +57,6 @@ export default class AsyncTask<Task, Result> {
   private retryWhenFailed?: boolean
 
   /**
-   * check whether two tasks are equal
-   *  default: (a, b) => a === b
-   */
-  private isSameTask: (a: Task, b: Task) => boolean
-
-
-  /**
    * tasks ready to be executed
    */
   private pendingTasks: Task[]
@@ -77,7 +80,7 @@ export default class AsyncTask<Task, Result> {
   /**
    * whether need to clean cache result, aka clean doneTaskMap
    */
-  private needCleanCache?: Bool
+  private needCleanCache?: boolean
   /**
    * default task options
    */
@@ -105,13 +108,14 @@ export default class AsyncTask<Task, Result> {
     this.isSameTask = userOptions.isSameTask
     this.maxBatchCount = userOptions.maxBatchCount
     this.maxWaitingGap = userOptions.maxWaitingGap
+    // @ts-ignore
     this.taskWaitingStrategy = userOptions.taskWaitingStrategy
     this.batchDoTasks = userOptions.batchDoTasks
     // @ts-ignore
     this.taskExecStrategy = userOptions.taskExecStrategy
     this.retryWhenFailed = userOptions.retryWhenFailed
     this.invalidAfter = userOptions.invalidAfter
-    this.innerDoTasks = this.innerDoTasks.bind(this)
+    this.tryTodDoTasks = this.tryTodDoTasks.bind(this)
   }
 
   async dispatch(task: Task): Promise<Result>
@@ -189,10 +193,28 @@ export default class AsyncTask<Task, Result> {
     } else {
       timeout = this.maxWaitingGap
     }
-    this.timeoutId = setTimeout(this.innerDoTasks, timeout)
+    this.timeoutId = setTimeout(this.tryTodDoTasks, timeout)
   }
 
-  private async innerDoTasks() {
+  private delayTimeoutId?: any
+  
+  /**
+   * try to do tasks
+   *  if taskExecStrategy is parallel then do it immediately,
+   *  otherwise waiting util taskQueue is empty
+   */
+  private tryTodDoTasks() {
+    // should exec in serial, and still has executing tasks
+    if (this.taskExecStrategy === 'serial' && this.taskQueue.length) {
+      clearTimeout(this.delayTimeoutId)
+      // wait a moment then check again
+      this.delayTimeoutId = setTimeout(this.tryTodDoTasks, 100)
+    } else {
+      this.doTasks()
+    }
+  }
+
+  private async doTasks() {
     const tasks = this.pendingTasks.splice(0)
     this.doingTasks = this.doingTasks.concat(tasks)
     const tasksGroup = this.maxBatchCount ? AsyncTask.chunk(tasks, this.maxBatchCount) : [tasks]
@@ -270,7 +292,7 @@ export default class AsyncTask<Task, Result> {
         return acc
       }, result)
     }
-    const val = this.getTaskResult(tasks) || (defaultResult ? [task, defaultResult] : false)
+    const val = this.getTaskResult(tasks) || (defaultResult ? [tasks, defaultResult] : false)
     if (!val) {
       throw new Error('not found')
     }
@@ -356,7 +378,8 @@ export default class AsyncTask<Task, Result> {
   }
 
   /**
-   * simulate Promise.allSettled result item
+   * simulate Promise.allSettled result item for better compatibility
+   *    (due to Promise.allSettled only support newer platforms)
    * @param promise 
    * @returns 
    */
