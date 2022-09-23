@@ -45,8 +45,21 @@ const asyncTask = new AsyncTask({
 })
 
 asyncTask.dispatch(['a', 'b']).then(console.log)
-asyncTask.dispatch('b').then(console.log)
+asyncTask.dispatch(['b', 'c']).then(console.log)
+asyncTask.dispatch(['d', 'c']).then(console.log)
+asyncTask.dispatch('c').then(console.log)
+// batchDoTasks will be only called once
+
 ```
+**NOTICE**: in following example, tasks won't combine
+```ts
+// batchDoTasks will be executed 3 times due to javascript language features
+const result1 = await asyncTask.dispatch(['a', 'b'])
+const result2 = await asyncTask.dispatch(['b', 'c'])
+const result3 = await asyncTask.dispatch(['d', 'c'])
+const result4 = await asyncTask.dispatch('c')
+```
+
 
 ## API
 
@@ -152,12 +165,15 @@ const getUserAsyncTask = new AsyncTask({
   batchDoTasks: batchGetUsers
 })
 
-const result1 = await getUserAsyncTask.dispatch(['user1', 'user2'])
-// [['user1', {id: 'user1', name: 'user1', email: 'xxx@aa.com'}], ['user2', {id: 'user2', name: 'user2', email: 'xxx2@aa.com'}]]
-const result2 = await getUserAsyncTask.dispatch(['user3', 'user2'])
-// [['user3', {id: 'user3', name: 'user3', email: 'xxx@aa.com'}], ['user2', {id: 'user2', name: 'user2', email: 'xxx2@aa.com'}]]
-
+const result = await Promise.all([
+  getUserAsyncTask.dispatch(['user1', 'user2']),
+  getUserAsyncTask.dispatch(['user3', 'user2'])
+])
 // only one request will be sent via getUsers with userIds ['user1', 'user2', 'user3']
+
+// request combine won't works when using await separately
+const result1 = await getUserAsyncTask.dispatch(['user1', 'user2'])
+const result2 = await getUserAsyncTask.dispatch(['user3', 'user2'])
 ```
 
 #### example 2
@@ -185,10 +201,13 @@ const decodePointsAsyncTask = new AsyncTask({
   isSameTask: isSamePoint
 })
 
-const result1 = await decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 11.1023}])
-const result2 = await decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 44.2478}])
-
+decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 11.1023}]).then(console.log)
+decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 44.2478}]).then(console.log)
 // only one request will be sent via decodeGeoPoints
+
+// request combine won't works when using await
+const result1 = await decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 11.1023}])
+const result2 = await decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 44.2478}]).then(console.log)
 ```
 
 

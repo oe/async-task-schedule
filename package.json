@@ -12,6 +12,12 @@
     "test": "jest",
     "prepublish": "yarn test && yarn build"
   },
+  "keywords": [
+    "async task",
+    "schedule",
+    "async",
+    "dispatch"
+  ],
   "repository": "https://github.com/oe/async-task-schedule.git",
   "author": "Saiya <oklark@outlook.com>",
   "license": "MIT",

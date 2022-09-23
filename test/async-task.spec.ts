@@ -11,13 +11,16 @@ describe('async-task-schedule', () => {
         },
       })
 
-      const result = await at.dispatch(['a', 'b', 'c'])
-      const result2 = await at.dispatch(['a', 'b', 'd'])
-      const result3 = await at.dispatch(['b', 'd', 'e'])
-      const result4 = await at.dispatch('e')
-      expect(result[0][1]).toEqual(result2[0][1])
+      const result = await Promise.all([
+        at.dispatch(['a', 'b', 'c']),
+        at.dispatch(['a', 'b', 'd']),
+        at.dispatch(['b', 'd', 'e']),
+        at.dispatch('e')
+      ])
+      expect(result[0][0][1]).toEqual(result[1][0][1])
+      expect(count).toBe(1)
       // @ts-ignore
-      expect(result4).toEqual(result3[2][1])
+      expect(result[3]).toEqual(result[2][2][1])
     })
 
     it("should get a not found error when result is missing", async () => {
