@@ -10,7 +10,7 @@
     "build": "parcel build --no-source-maps",
     "clean": "rimraf dist",
     "test": "jest",
-    "prepublish": "yarn build"
+    "prepublish": "yarn test && yarn build"
   },
   "repository": "https://github.com/oe/async-task-schedule.git",
   "author": "Saiya <oklark@outlook.com>",
