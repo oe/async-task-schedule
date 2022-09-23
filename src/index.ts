@@ -23,9 +23,16 @@ export default class AsyncTask<Task, Result> {
   private taskExecStrategy: 'parallel' | 'serial'
 
   /**
-   * throttle in milliseconds, default 50
+   * task waiting stragy, default to debounce
+   *  throttle: tasks will combined and dispatch every `maxWaitingGap`
+   *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
    */
-  private maxWaitingGap?: number
+  private taskWaitingStrategy: 'throttle' | 'debounce'
+  /**
+   * task waiting time in milliseconds, default 50ms
+   *     differently according to taskWaitingStrategy
+   */
+  private maxWaitingGap: number
 
 
   /**
@@ -66,7 +73,11 @@ export default class AsyncTask<Task, Result> {
    * cached task result
    */
   private doneTaskMap: Array<{ task: Task, value: Result | Error, time: number }>
-
+  
+  /**
+   * whether need to clean cache result, aka clean doneTaskMap
+   */
+  private needCleanCache?: Bool
   /**
    * default task options
    */
@@ -74,6 +85,7 @@ export default class AsyncTask<Task, Result> {
     isSameTask: (a: any, b: any) => a === b,
     taskExecStrategy: 'parallel',
     maxWaitingGap: 50,
+    taskWaitingStrategy: 'debounce',
     retryWhenFailed: true,
   }
 
@@ -93,6 +105,7 @@ export default class AsyncTask<Task, Result> {
     this.isSameTask = userOptions.isSameTask
     this.maxBatchCount = userOptions.maxBatchCount
     this.maxWaitingGap = userOptions.maxWaitingGap
+    this.taskWaitingStrategy = userOptions.taskWaitingStrategy
     this.batchDoTasks = userOptions.batchDoTasks
     // @ts-ignore
     this.taskExecStrategy = userOptions.taskExecStrategy
@@ -115,15 +128,42 @@ export default class AsyncTask<Task, Result> {
       // not found
     }
     return new Promise((resolve, reject) => {
-      this.createTask(tasks, resolve, reject)
+      this.createTasks(tasks, resolve, reject)
     })
   }
 
+  /**
+   * clean cached task result
+   *  this may not exec immediately, it will take effect after all tasks are done
+   */
+  cleanCache() {
+    this.needCleanCache = true
+    this.cleanCacheIfNeeded()
+  }
+
+  /**
+   * clean cache if needed
+   */
+  private cleanCacheIfNeeded() {
+    if (!this.needCleanCache) return
+    if (this.pendingTasks.length || this.doingTasks.length || this.taskQueue.length) return
+    this.needCleanCache = false
+    this.doneTaskMap = []
+  }
+
+  /** tasks combine waiting timeout */
   private timeoutId?: any
 
+  /** next exec time for taskWaitingStrategy === 'throttle' */
   private nextTime?: any
 
-  private createTask(tasks: Task | Task[], resolve: Function, reject: Function) {
+  /**
+   * create tasks
+   * @param tasks task list
+   * @param resolve promise resolve function
+   * @param reject promise reject function
+   */
+  private createTasks(tasks: Task | Task[], resolve: Function, reject: Function) {
     this.taskQueue.push({ tasks, resolve, reject })
     let myTasks = Array.isArray(tasks) ? tasks : [tasks]
     // 去除掉正在等待的、正在处理的以及已经成功的
@@ -138,11 +178,18 @@ export default class AsyncTask<Task, Result> {
     }
     if (!myTasks.length) return
     this.pendingTasks = this.pendingTasks.concat(myTasks)
+
     clearTimeout(this.timeoutId)
-    const now = Date.now()
-    this.nextTime = (!this.nextTime || now > this.nextTime)
-      ? now + this.maxWaitingGap! : this.nextTime
-    this.timeoutId = setTimeout(this.innerDoTasks, this.nextTime - now)
+    let timeout = 0
+    if (this.taskWaitingStrategy === 'throttle') {
+      const now = Date.now()
+      this.nextTime = (!this.nextTime || now > this.nextTime)
+      ? now + this.maxWaitingGap : this.nextTime
+      timeout = this.nextTime - now
+    } else {
+      timeout = this.maxWaitingGap
+    }
+    this.timeoutId = setTimeout(this.innerDoTasks, timeout)
   }
 
   private async innerDoTasks() {
@@ -189,10 +236,10 @@ export default class AsyncTask<Task, Result> {
  * @param succeed 获取成功的结果对象
  * @param failed  获取失败的 fileId 数组
  */
-  private checkAllTasks() {
+  private checkAllTasks(defaultResult?: any) {
     this.taskQueue.forEach((taskItem) => {
       try {
-        const result = this.tryGetTaskResult(taskItem.tasks)
+        const result = this.tryGetTaskResult(taskItem.tasks, defaultResult)
         // eslint-disable-next-line no-param-reassign
         taskItem.isDone = true
         if (result instanceof Error) {
@@ -208,13 +255,14 @@ export default class AsyncTask<Task, Result> {
     this.taskQueue = this.taskQueue.filter((task) => !task.isDone)
   }
 
-  private tryGetTaskResult(tasks: Task[] | Task) {
-    if (!this.doneTaskMap.length) throw new Error('no done task')
+  private tryGetTaskResult(tasks: Task[] | Task, defaultResult?: any) {
+    // no cached data and no default result provided
+    if (!this.doneTaskMap.length && !defaultResult) throw new Error('no done task')
 
     if (Array.isArray(tasks)) {
       const result: Array<[Task, Result | Error]> = []
       return tasks.reduce((acc, task) => {
-        const val = this.getTaskResult(task)
+        const val = this.getTaskResult(task) || (defaultResult ? [task, defaultResult] : false)
         if (!val) {
           throw new Error('not found')
         }
@@ -222,7 +270,7 @@ export default class AsyncTask<Task, Result> {
         return acc
       }, result)
     }
-    const val = this.getTaskResult(tasks)
+    const val = this.getTaskResult(tasks) || (defaultResult ? [task, defaultResult] : false)
     if (!val) {
       throw new Error('not found')
     }
@@ -266,10 +314,11 @@ export default class AsyncTask<Task, Result> {
   private cleanupTasks() {
     // no doing tasks, but the que is not empty, aka, there is some unresolved tasks
     if (this.taskQueue.length && !this.pendingTasks.length && !this.doingTasks.length) {
-      // todo
+      this.checkAllTasks(new Error('not found'))
       this.taskQueue = []
     }
-    // has validity and no taskQueue
+    this.cleanCacheIfNeeded()
+    // has validity or retry flag and no taskQueue
     if ((this.invalidAfter || this.retryWhenFailed) && !this.taskQueue.length) {
       const now = Date.now()
       this.doneTaskMap = this.doneTaskMap.filter((item) => {

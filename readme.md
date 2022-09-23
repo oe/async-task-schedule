@@ -60,9 +60,16 @@ interface IAsyncTask {
   private taskExecStrategy: 'parallel' | 'serial'
 
   /**
-   * throttle in milliseconds, default 50
+   * task waiting stragy, default to debounce
+   *  throttle: tasks will combined and dispatch every `maxWaitingGap`
+   *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
    */
-  private maxWaitingGap?: number
+  private taskWaitingStrategy: 'throttle' | 'debounce'
+  /**
+   * task waiting time in milliseconds, default 50ms
+   *     differently according to taskWaitingStrategy
+   */
+  private maxWaitingGap: number
 
 
   /**
