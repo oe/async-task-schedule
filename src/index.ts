@@ -1,3 +1,6 @@
+export type ITaskExecStrategy = 'parallel' | 'serial'
+export type ITaskWaitingStrategy = 'throttle' | 'debounce'
+
 export default class AsyncTask<Task, Result> {
   /**
    * action to do batch tasks
@@ -6,7 +9,7 @@ export default class AsyncTask<Task, Result> {
    * 
    * batchDoTasks should receive multi tasks, and return tuple of task and response or error in array
    */
-  private batchDoTasks: (tasks: Task[]) => Promise<Array<[Task, Result | Error ]>>
+  private batchDoTasks: (tasks: Task[]) => Promise<Array<[Task, Result | Error ]>> | Array<[Task, Result | Error ]>
 
   /**
    * check whether two tasks are equal
@@ -22,7 +25,7 @@ export default class AsyncTask<Task, Result> {
   private maxBatchCount?: number
 
   /**
-   * do batch tasks executing strategy, default parallel
+   * batch tasks executing strategy, default parallel
    *  only works if maxBatchCount is specified and tasks more than maxBatchCount are executed
    *  
    * parallel: split all tasks into a list stride by maxBatchCount, exec them at the same time
@@ -30,24 +33,25 @@ export default class AsyncTask<Task, Result> {
    *    if serial specified, when tasks are executing, new comings will wait for them to complete
    *    it's very useful to cool down task requests
    */
-  private taskExecStrategy: 'parallel' | 'serial'
+  private taskExecStrategy: ITaskExecStrategy
 
   /**
    * task waiting stragy, default to debounce
    *  throttle: tasks will combined and dispatch every `maxWaitingGap`
    *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
    */
-  private taskWaitingStrategy: 'throttle' | 'debounce'
+  private taskWaitingStrategy: ITaskWaitingStrategy
+
   /**
    * task waiting time in milliseconds, default 50ms
    *     differently according to taskWaitingStrategy
    */
   private maxWaitingGap: number
 
-
   /**
-   * validity of the result(in ms), default unlimited
+   * validity(caching duration) of the result(in ms), default unlimited
    *    undefined or 0 for unlimited
+   *  default to 1s
    */
   private invalidAfter?: number
 
@@ -62,12 +66,13 @@ export default class AsyncTask<Task, Result> {
   private pendingTasks: Task[]
 
   /**
-   * tasks in progress
+   * tasks executing in progress
    */
   private doingTasks: Task[]
 
   /**
-   * original tasks request in queue
+   * original tasks request in queue waiting to resolve
+   *  empty if all task are done
    */
   private taskQueue: Array<{
     tasks: Task[]|Task, resolve: Function, reject: Function, isDone?: boolean }>
@@ -86,18 +91,55 @@ export default class AsyncTask<Task, Result> {
    */
   private static defaultOptions = {
     isSameTask: (a: any, b: any) => a === b,
-    taskExecStrategy: 'parallel',
+    taskExecStrategy: 'parallel' as const,
     maxWaitingGap: 50,
-    taskWaitingStrategy: 'debounce',
+    invalidAfter: 1000,
+    taskWaitingStrategy: 'debounce' as const,
     retryWhenFailed: true,
   }
 
   constructor(options: {
+    /**
+     * max batch tasks count when dispatching
+     */
     maxBatchCount?: number,
-    batchDoTasks: (tasks: Task[]) => Promise<Array<[Task, Result | Error ]>>,
-    taskExecStrategy?: 'parallel' | 'serial'
+    /**
+     * action to do batch tasks
+     *  one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
+     */
+    batchDoTasks?: (tasks: Task[]) => Promise<Array<[Task, Result | Error ]>> | Array<[Task, Result | Error ]>,
+    /**
+     * action to do single task
+     *  one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
+     */
+    doTask?: (task: Task) => Promise<Result> | Result
+    /**
+     * do batch tasks executing strategy, default to parallel
+     */
+    taskExecStrategy?: ITaskExecStrategy
+    /**
+     * max waiting time(in milliseconds) for combined tasks, default to 50
+     */
+    maxWaitingGap?: number
+    /**
+     * task result caching duration(in milliseconds), default to 1s
+     *   undefined or 0 for unlimited
+     *   set to minimum value 1 to disable caching
+     */
     invalidAfter?: number
+    /**
+     * retry failed tasks next time after failing, default true
+     */
     retryWhenFailed?: boolean
+    /**
+     * task waiting stragy, default to debounce
+     *  throttle: tasks will combined and dispatch every `maxWaitingGap`
+     *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
+     */
+    taskWaitingStrategy?: ITaskWaitingStrategy
+    /**
+     * check whether two tasks are identified the same
+     */
     isSameTask?: (a: Task, b: Task) => boolean
   }) {
     const userOptions = { ...AsyncTask.defaultOptions, ...options }
@@ -108,26 +150,34 @@ export default class AsyncTask<Task, Result> {
     this.isSameTask = userOptions.isSameTask
     this.maxBatchCount = userOptions.maxBatchCount
     this.maxWaitingGap = userOptions.maxWaitingGap
-    // @ts-ignore
+
     this.taskWaitingStrategy = userOptions.taskWaitingStrategy
-    this.batchDoTasks = userOptions.batchDoTasks
-    // @ts-ignore
+    if (!userOptions.batchDoTasks && !userOptions.doTask) {
+      throw new Error('one of batchDoTasks / doTask must be specified')
+    }
+    this.batchDoTasks = userOptions.batchDoTasks || AsyncTask.wrapDoTask(userOptions.doTask!)
+
     this.taskExecStrategy = userOptions.taskExecStrategy
     this.retryWhenFailed = userOptions.retryWhenFailed
     this.invalidAfter = userOptions.invalidAfter
     this.tryTodDoTasks = this.tryTodDoTasks.bind(this)
   }
-
+  /**
+   * execute task, get task result in promise
+   */
   async dispatch(task: Task): Promise<Result>
+  /**
+   * execute tasks, get response in tuple of task and result/error
+   */
   async dispatch(tasks: Task[]): Promise<[[Task, Result | Error]]>
   async dispatch(tasks: Task[] | Task) {
     this.cleanupTasks()
     try {
       const result = this.tryGetTaskResult(tasks)
       if (result instanceof Error) {
-        throw result
+        return Promise.reject(result)
       }
-      return result
+      return Promise.resolve(result)
     } catch (error) {
       // not found
     }
@@ -240,7 +290,6 @@ export default class AsyncTask<Task, Result> {
         )
         allResponse.forEach((result, index) => {
           this.updateResultMap(tasksGroup[index],
-            // @ts-ignore
             result.status === 'rejected' ? AsyncTask.wrapError(result.reason) : result.value)
         })
       } catch (error) {
@@ -254,10 +303,9 @@ export default class AsyncTask<Task, Result> {
   }
 
   /**
- * 检查所有任务
- * @param succeed 获取成功的结果对象
- * @param failed  获取失败的 fileId 数组
- */
+   * check all tasks, try to resolve
+   * @param defaultResult default task result, use when force to clean all tasks
+   */
   private checkAllTasks(defaultResult?: any) {
     this.taskQueue.forEach((taskItem) => {
       try {
@@ -383,12 +431,27 @@ export default class AsyncTask<Task, Result> {
    * @param promise 
    * @returns 
    */
-  static async wrapPromise<T>(promise: Promise<T>) {
+  static async wrapPromise<T>(promise: Promise<T> | T) {
     try {
       const result = await promise
-      return { status: 'fulfilled', value: result }
+      return { status: 'fulfilled', value: result } as { status: 'fulfilled', value: T }
     } catch (error) {
-      return { status: 'rejected', reason: error }
+      return { status: 'rejected', reason: error } as { status: 'rejected', reason: Error }
+    }
+  }
+
+  /**
+   * wrap do task to a batch version
+   * @param doTask action to do single task
+   * @returns batch version to do multi tasks
+   */
+  static wrapDoTask<T, R>(doTask: (t: T) => Promise<R> | R): (tasks: T[]) => Promise<Array<[T, R | Error ]>> {
+    return async function (tasks: T[]): Promise<Array<[T, R | Error]>> {
+      const results = await Promise.all(tasks.map(t => AsyncTask.wrapPromise(doTask(t))))
+      return tasks.map((t, idx) => {
+        const result = results[idx]
+        return [t, result.status === 'fulfilled' ? result.value : result.reason]
+      })
     }
   }
 }

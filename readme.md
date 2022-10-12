@@ -21,7 +21,7 @@ schedule async tasks in order
 ## Features
 * remove duplicated tasks' requests
 * combine tasks' requests in same time and do all together
-* can prevent massive requests at same time, make them executing one group by one group
+* can prevent massive requests at same time, make them execute one group by one group
 * cache result and can specify validity
 
 
@@ -72,10 +72,16 @@ interface IAsyncTask {
    *  Task: single task request info
    *  Result: single task success response
    * 
-   * batchDoTasks should receive multi tasks, and return tuple of task and response or error in array
+   * batchDoTasks should receive multitasks, and return tuple of task and response or error in array
+   * one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
    */
   private batchDoTasks: (tasks: Task[]) => Promise<Array<[Task, Result | Error ]>>
 
+  /**
+   * action to do single task
+   *  one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
+   */
+  doTask?: ((task: Task) => Promise<Result>)
 
   /**
    * check whether two tasks are equal
@@ -91,13 +97,13 @@ interface IAsyncTask {
   private maxBatchCount?: number
 
   /**
-   * do batch tasks executing strategy, default parallel
+   * batch tasks executing strategy, default parallel
    *  only works if maxBatchCount is specified and tasks more than maxBatchCount are executed
    *  
    * parallel: split all tasks into a list stride by maxBatchCount, exec them at the same time
    * serial: split all tasks into a list stride by maxBatchCount, exec theme one group by one group
    *    if serial specified, when tasks are executing, new comings will wait for them to complete
-   *    it's very useful to cool down task requests
+   *    it's especially useful to cool down task requests
    */
   private taskExecStrategy: 'parallel' | 'serial'
 
@@ -128,9 +134,9 @@ interface IAsyncTask {
 ```
 
 ### dispatch(tasks: Task[]):Promise<Array<[Task, Result | Error]>>
-dispatch multi tasks at a time, will get tuple of task and response in array
+dispatch multitasks at a time, will get tuple of task and response in array
 
-this method won't throw any error, it will fulfilled even partially failed, you can check whether its success by `tuple[1] instanceof Error`
+this method won't throw any error, it will fulfil even partially failed, you can check whether its success by `tuple[1] instanceof Error`
 
 ### dispatch(tasks: Task):Promise<Result>
 dispatch a task, will get response if success, or throw an error
@@ -146,7 +152,7 @@ attention: this action may not exec immediately, it will take effect after all t
 what you need to do is to wrap your existing task executing function into a new `batchDoTasks`
 
 #### example 1
-suppose we have a method `getUsers` defined as follow:
+suppose we have a method `getUsers` defined as follows:
 
 ```ts
 getUsers(userIds: string[]) -> Promise<[{id: string, name: string, email: string}]>
@@ -177,15 +183,16 @@ const result2 = await getUserAsyncTask.dispatch(['user3', 'user2'])
 ```
 
 #### example 2
-if the request parameter is a object, then we should provide a `isSameTask` to identify unique task
+if the request parameter is an object, then we should provide a `isSameTask` to identify unique task
 
-suppose we have a method `decodeGeoPoints` defined as follow:
+suppose we have a method `decodeGeoPoints` defined as follows:
 
 ```ts
 decodeGeoPoints(points: Array<{lat: number, long: number}>) -> Promise<[{point: {lat: number, long: number}, title: string, description: string, country: string}]>
 ``` 
 
-then we can integrate as follow
+then we can integrate as follows:
+
 ```ts
 async function batchDecodeGeoPoints(points: Array<{lat: number, long: number}>): Promise<Array<[{lat: number, long: number}, {point: {lat: number, long: number}, title: string, description: string, country: string}]>> {
   // there is no need to try/catch, errors will be handled properly
@@ -205,13 +212,13 @@ decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long:
 decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 44.2478}]).then(console.log)
 // only one request will be sent via decodeGeoPoints
 
-// request combine won't works when using await
+// request combine won't work when using await
 const result1 = await decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 11.1023}])
 const result2 = await decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 44.2478}]).then(console.log)
 ```
 
 
-### how to cool down massive requests at same time
+### how to cool down massive requests at the same time
 by setting `taskExecStrategy` to `serial` and using smaller `maxBatchCount`(you can even set it to `1`), you can achieve this easily
 
 ```ts
