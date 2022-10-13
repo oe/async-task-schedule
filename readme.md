@@ -123,6 +123,7 @@ interface IAsyncTask {
   /**
    * validity of the result(in ms), default unlimited
    *    undefined or 0 for unlimited
+   * cache is lazy cleaned after invalid
    */
   private invalidAfter?: number
 

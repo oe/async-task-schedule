@@ -52,6 +52,8 @@ export default class AsyncTask<Task, Result> {
    * validity(caching duration) of the result(in ms), default unlimited
    *    undefined or 0 for unlimited
    *  default to 1s
+   * 
+   * cache is lazy cleaned after invalid
    */
   private invalidAfter?: number
 
@@ -122,9 +124,11 @@ export default class AsyncTask<Task, Result> {
      */
     maxWaitingGap?: number
     /**
-     * task result caching duration(in milliseconds), default to 1s
-     *   undefined or 0 for unlimited
-     *   set to minimum value 1 to disable caching
+     * task result caching duration(in milliseconds), default to 1s  
+     * >`undefined` or `0` for unlimited  
+     * >set to minimum value `1` to disable caching  
+     * 
+     * *cache is lazy cleaned after invalid*
      */
     invalidAfter?: number
     /**
@@ -258,11 +262,11 @@ export default class AsyncTask<Task, Result> {
   /**
    * try to do tasks
    *  if taskExecStrategy is parallel then do it immediately,
-   *  otherwise waiting util taskQueue is empty
+   *  otherwise waiting util doingTasks is empty
    */
   private tryTodDoTasks() {
     // should exec in serial, and still has executing tasks
-    if (this.taskExecStrategy === 'serial' && this.taskQueue.length) {
+    if (this.taskExecStrategy === 'serial' && this.doingTasks.length) {
       clearTimeout(this.delayTimeoutId)
       // wait a moment then check again
       this.delayTimeoutId = setTimeout(this.tryTodDoTasks, 50)
@@ -290,33 +294,27 @@ export default class AsyncTask<Task, Result> {
         this.removeDoneTasks(taskList)
       }
     } else {
-      try {
-        const allResponse = await Promise.all(
-          tasksGroup
-            .map((taskList) => AsyncTask.wrapTaskExecutor(this.batchDoTasks, taskList)),
-        )
-        allResponse.forEach((result, index) => {
-          this.updateResultMap(tasksGroup[index],
-            result.status === 'rejected' ? AsyncTask.wrapError(result.reason) : result.value)
-        })
-      } catch (error) {
-        this.updateResultMap(tasks, AsyncTask.wrapError(error))
-      }
+      const allResponse = await Promise.all(
+        tasksGroup
+          .map((taskList) => AsyncTask.runTaskExecutor(this.batchDoTasks, taskList)),
+      )
+      allResponse.forEach((result, index) => {
+        this.updateResultMap(tasksGroup[index],
+          result.status === 'rejected' ? AsyncTask.wrapError(result.reason) : result.value)
+      })
       this.checkAllTasks()
       this.removeDoneTasks(tasks)
     }
-    // remove all unresolved tasks
     this.cleanupTasks()
   }
 
   /**
    * check all tasks, try to resolve
-   * @param defaultResult default task result, use when force to clean all tasks
    */
-  private checkAllTasks(defaultResult?: any) {
+  private checkAllTasks() {
     this.taskQueue.forEach((taskItem) => {
       try {
-        const result = this.tryGetTaskResult(taskItem.tasks, defaultResult)
+        const result = this.tryGetTaskResult(taskItem.tasks)
         // eslint-disable-next-line no-param-reassign
         taskItem.isDone = true
         if (result instanceof Error) {
@@ -338,20 +336,20 @@ export default class AsyncTask<Task, Result> {
    * @param tasks tasks to check
    * @param defaultResult default result if not found
    */
-  private tryGetTaskResult(tasks: Task[] | Task, defaultResult?: any) {
+  private tryGetTaskResult(tasks: Task[] | Task) {
     // no cached data and no default result provided
-    if (!this.doneTaskMap.length && !defaultResult) throw new Error('no done task')
+    if (!this.doneTaskMap.length) throw new Error('no done task')
 
     if (Array.isArray(tasks)) {
       const result: Array<[Task, Result | Error]> = []
       return tasks.reduce((acc, task) => {
-        const val = this.getTaskResult(task) || (defaultResult ? [task, defaultResult] : false)
+        const val = this.getTaskResult(task) || false
         if (!val) throw new Error('not found')
         acc.push(val)
         return acc
       }, result)
     }
-    const val = this.getTaskResult(tasks) || (defaultResult ? [tasks, defaultResult] : false)
+    const val = this.getTaskResult(tasks) || false
     if (!val) throw new Error('not found')
     return val[1]
   }
@@ -388,27 +386,25 @@ export default class AsyncTask<Task, Result> {
 
   /**
    * clean tasks
+   *  try to clean cache if needed
+   *  try to remove failed result, remove outdated cache if needed
    */
   private cleanupTasks() {
-    // no doing tasks, but the que is not empty, aka, there is some unresolved tasks
-    if (this.taskQueue.length && !this.pendingTasks.length && !this.doingTasks.length) {
-      this.checkAllTasks(new Error('not found'))
-      this.taskQueue = []
-    }
     this.cleanCacheIfNeeded()
-    // has validity or retry flag and no taskQueue
-    if ((this.invalidAfter || this.retryWhenFailed) && !this.taskQueue.length) {
-      const now = Date.now()
-      this.doneTaskMap = this.doneTaskMap.filter((item) => {
-        if (this.retryWhenFailed) {
-          return !(item.value instanceof Error)
-        }
-        if (this.invalidAfter) {
-          return now - item.time <= this.invalidAfter!
-        }
-        return true
-      })
-    }
+    // has unresolved tasks, unable to cleanup task
+    if (this.taskQueue.length) return
+    // no need to remove outdated or failed tasks
+    if (!this.invalidAfter && !this.retryWhenFailed) return
+    const now = Date.now()
+    this.doneTaskMap = this.doneTaskMap.filter((item) => {
+      if (this.retryWhenFailed && item.value instanceof Error) {
+        return false
+      }
+      if (this.invalidAfter) {
+        return now - item.time <= this.invalidAfter!
+      }
+      return true
+    })
   }
 
   /**
@@ -443,12 +439,12 @@ export default class AsyncTask<Task, Result> {
    * @param promise 
    * @returns 
    */
-  static async wrapTaskExecutor<A extends Array<unknown>,  F extends ((...args: A) => unknown)>(executor: F, ...args: A) {
+  static async runTaskExecutor<A extends Array<unknown>,  F extends ((...args: A) => unknown)>(executor: F, ...args: A) {
     try {
       const result = await executor(...args)
       return { status: 'fulfilled', value: result } as { status: 'fulfilled', value: Awaited<ReturnType<F>> }
     } catch (error) {
-      return { status: 'rejected', reason: error } as { status: 'rejected', reason: Error }
+      return { status: 'rejected', reason: AsyncTask.wrapError(error) } as { status: 'rejected', reason: Error }
     }
   }
 
@@ -459,8 +455,7 @@ export default class AsyncTask<Task, Result> {
    */
   static wrapDoTask<T, R>(doTask: (t: T) => Promise<R> | R): (tasks: T[]) => Promise<Array<[T, R | Error ]>> {
     return async function (tasks: T[]): Promise<Array<[T, R | Error]>> {
-      const a = await AsyncTask.wrapTaskExecutor(doTask, tasks[0])
-      const results = await Promise.all(tasks.map(t => AsyncTask.wrapTaskExecutor(doTask, t)))
+      const results = await Promise.all(tasks.map(t => AsyncTask.runTaskExecutor(doTask, t)))
       return tasks.map((t, idx) => {
         const result = results[idx]
         return [t, result.status === 'fulfilled' ? result.value : result.reason]
