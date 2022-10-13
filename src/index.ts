@@ -169,7 +169,7 @@ export default class AsyncTask<Task, Result> {
   /**
    * execute tasks, get response in tuple of task and result/error
    */
-  async dispatch(tasks: Task[]): Promise<[[Task, Result | Error]]>
+  async dispatch<T extends readonly Task[] | []>(tasks: T): Promise<{ [k in keyof T]: [Task, Result | Error] } >
   async dispatch(tasks: Task[] | Task) {
     this.cleanupTasks()
     try {
@@ -220,10 +220,13 @@ export default class AsyncTask<Task, Result> {
   private createTasks(tasks: Task | Task[], resolve: Function, reject: Function) {
     this.taskQueue.push({ tasks, resolve, reject })
     let myTasks = Array.isArray(tasks) ? tasks : [tasks]
-    // 去除掉正在等待的、正在处理的以及已经成功的
+    // remove duplicated tasks in itself
+    myTasks = myTasks.filter((task, idx) => idx === myTasks.findIndex(t => this.isSameTask(t, task)))
+    // remove pending tasks
     if (this.pendingTasks.length) {
       myTasks = myTasks.filter((f) => !this.hasTask(this.pendingTasks, f))
     }
+    // remove doing tasks
     if (myTasks.length && this.doingTasks.length) {
       myTasks = myTasks.filter((f) => !this.hasTask(this.doingTasks, f))
     }
@@ -286,7 +289,7 @@ export default class AsyncTask<Task, Result> {
       try {
         const allResponse = await Promise.all(
           tasksGroup
-            .map((taskList) => AsyncTask.wrapPromise(this.batchDoTasks(taskList))),
+            .map((taskList) => AsyncTask.wrapTaskExecutor(this.batchDoTasks, taskList)),
         )
         allResponse.forEach((result, index) => {
           this.updateResultMap(tasksGroup[index],
@@ -360,7 +363,7 @@ export default class AsyncTask<Task, Result> {
   }
 
   private removeDoneTasks(tasks: Task[]) {
-    this.doingTasks = this.doingTasks.filter((f) => this.hasTask(tasks, f))
+    this.doingTasks = this.doingTasks.filter((f) => !this.hasTask(tasks, f))
   }
 
   private updateResultMap(tasks: Task[], result: Array<[Task, Result | Error]> | Error) {
@@ -392,11 +395,11 @@ export default class AsyncTask<Task, Result> {
     if ((this.invalidAfter || this.retryWhenFailed) && !this.taskQueue.length) {
       const now = Date.now()
       this.doneTaskMap = this.doneTaskMap.filter((item) => {
-        if (this.invalidAfter) {
-          return now - item.time <= this.invalidAfter!
-        }
         if (this.retryWhenFailed) {
           return !(item.value instanceof Error)
+        }
+        if (this.invalidAfter) {
+          return now - item.time <= this.invalidAfter!
         }
         return true
       })
@@ -431,10 +434,10 @@ export default class AsyncTask<Task, Result> {
    * @param promise 
    * @returns 
    */
-  static async wrapPromise<T>(promise: Promise<T> | T) {
+  static async wrapTaskExecutor<A extends Array<unknown>,  F extends ((...args: A) => unknown)>(executor: F, ...args: A) {
     try {
-      const result = await promise
-      return { status: 'fulfilled', value: result } as { status: 'fulfilled', value: T }
+      const result = await executor(...args)
+      return { status: 'fulfilled', value: result } as { status: 'fulfilled', value: Awaited<ReturnType<F>> }
     } catch (error) {
       return { status: 'rejected', reason: error } as { status: 'rejected', reason: Error }
     }
@@ -447,7 +450,8 @@ export default class AsyncTask<Task, Result> {
    */
   static wrapDoTask<T, R>(doTask: (t: T) => Promise<R> | R): (tasks: T[]) => Promise<Array<[T, R | Error ]>> {
     return async function (tasks: T[]): Promise<Array<[T, R | Error]>> {
-      const results = await Promise.all(tasks.map(t => AsyncTask.wrapPromise(doTask(t))))
+      const a = await AsyncTask.wrapTaskExecutor(doTask, tasks[0])
+      const results = await Promise.all(tasks.map(t => AsyncTask.wrapTaskExecutor(doTask, t)))
       return tasks.map((t, idx) => {
         const result = results[idx]
         return [t, result.status === 'fulfilled' ? result.value : result.reason]

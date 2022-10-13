@@ -1,6 +1,6 @@
 import AsyncTask from '../src'
 
-describe('async-task-schedule', () => {
+describe('async-task-schedule with batchDoTasks', () => {
   describe('simple task schedule', () => {
     it('should use cache', async () => {
       let count = 0
@@ -23,7 +23,7 @@ describe('async-task-schedule', () => {
       expect(result[3]).toEqual(result[2][2][1])
     })
 
-    it("should get a not found error when result is missing", async () => {
+    it('should get a not found error when result is missing', async () => {
       const at = new AsyncTask({
         // @ts-ignore
         batchDoTasks: async (names: number[]) => {
@@ -39,30 +39,29 @@ describe('async-task-schedule', () => {
     })
   })
 
-  it('using doTask', async () => {
-    const taskList = new Set<number>()
+  it.only('should retry if failed',async () => {
+    let countOf2 = 0
     const at = new AsyncTask({
-      doTask(n: number) {
-        if (taskList.has(n)) {
-          console.log(`duplicated task found: ${n}`)
-        }
-        taskList.add(n)
-        if (n > 20) throw new Error(`jackpot bong! ${n}`)
-        return n * n
-      }
+      batchDoTasks: async (nums: number[]) => {
+        return nums.map(n => {
+          let result: number | Error = n * n
+          if (n === 2) {
+            countOf2++;
+            result = countOf2 < 2 ? new Error('new error') : n * n
+          }
+          return [n, result]
+        })
+      },
+      retryWhenFailed: true
     })
-    const result = await Promise.all([
-      at.dispatch([1, 2, 3, 4]),
-      at.dispatch([5, 1, 7]),
-      at.dispatch([7, 3, 21]),
-    ])
 
-    expect(result[2][0][1] > 0).toEqual(true)
-    try {
-      const result = await at.dispatch(21)
-      fail('should go into error')
-    } catch(e) {
-      expect(e).toBeInstanceOf(Error)
-    }
+    const result1 = await at.dispatch([1, 3, 3])
+    const result2 = await at.dispatch([1, 2, 2])
+    // expect(result2[2])
+    const result3 = await at.dispatch([1, 2])
+    const result = await at.dispatch(2)
+    expect(result).toEqual(4)
+    expect(countOf2).toEqual(2)
   })
+
 })
