@@ -10,7 +10,7 @@
     "build": "parcel build --no-source-maps",
     "clean": "rimraf dist",
     "test": "jest --coverage",
-    "prepublish": "yarn test && yarn build"
+    "release": "yarn test && yarn build && yarn publish"
   },
   "keywords": [
     "async task",
