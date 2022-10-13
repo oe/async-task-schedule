@@ -9,7 +9,7 @@
     "prebuild": "yarn clean",
     "build": "parcel build --no-source-maps",
     "clean": "rimraf dist",
-    "test": "jest",
+    "test": "jest --coverage",
     "prepublish": "yarn test && yarn build"
   },
   "keywords": [

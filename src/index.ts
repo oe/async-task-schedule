@@ -14,7 +14,7 @@ export default class AsyncTask<Task, Result> {
   /**
    * check whether two tasks are equal
    *  it helps to avoid duplicated tasks
-   *  default: (a, b) => a === b
+   *  default:  AsyncTask.isEqual (deep comparison)
    */
   private isSameTask: (a: Task, b: Task) => boolean
 
@@ -90,7 +90,7 @@ export default class AsyncTask<Task, Result> {
    * default task options
    */
   private static defaultOptions = {
-    isSameTask: (a: any, b: any) => a === b,
+    isSameTask: AsyncTask.isEqual,
     taskExecStrategy: 'parallel' as const,
     maxWaitingGap: 50,
     invalidAfter: 1000,
@@ -230,6 +230,7 @@ export default class AsyncTask<Task, Result> {
     if (myTasks.length && this.doingTasks.length) {
       myTasks = myTasks.filter((f) => !this.hasTask(this.doingTasks, f))
     }
+    // remove done tasks
     if (myTasks.length) {
       myTasks = myTasks.filter((f) => !this.getTaskResult(f))
     }
@@ -249,6 +250,9 @@ export default class AsyncTask<Task, Result> {
     this.timeoutId = setTimeout(this.tryTodDoTasks, timeout)
   }
 
+  /**
+   * time out when exec task in serial
+   */
   private delayTimeoutId?: any
   
   /**
@@ -261,7 +265,7 @@ export default class AsyncTask<Task, Result> {
     if (this.taskExecStrategy === 'serial' && this.taskQueue.length) {
       clearTimeout(this.delayTimeoutId)
       // wait a moment then check again
-      this.delayTimeoutId = setTimeout(this.tryTodDoTasks, 100)
+      this.delayTimeoutId = setTimeout(this.tryTodDoTasks, 50)
     } else {
       this.doTasks()
     }
@@ -328,6 +332,12 @@ export default class AsyncTask<Task, Result> {
     this.taskQueue = this.taskQueue.filter((task) => !task.isDone)
   }
 
+  /**
+   * get result list of given tasks
+   *  throw error when not found(to make it easier to distinct from falsy results)
+   * @param tasks tasks to check
+   * @param defaultResult default result if not found
+   */
   private tryGetTaskResult(tasks: Task[] | Task, defaultResult?: any) {
     // no cached data and no default result provided
     if (!this.doneTaskMap.length && !defaultResult) throw new Error('no done task')
@@ -336,17 +346,13 @@ export default class AsyncTask<Task, Result> {
       const result: Array<[Task, Result | Error]> = []
       return tasks.reduce((acc, task) => {
         const val = this.getTaskResult(task) || (defaultResult ? [task, defaultResult] : false)
-        if (!val) {
-          throw new Error('not found')
-        }
+        if (!val) throw new Error('not found')
         acc.push(val)
         return acc
       }, result)
     }
     const val = this.getTaskResult(tasks) || (defaultResult ? [tasks, defaultResult] : false)
-    if (!val) {
-      throw new Error('not found')
-    }
+    if (!val) throw new Error('not found')
     return val[1]
   }
 
@@ -355,7 +361,6 @@ export default class AsyncTask<Task, Result> {
     if (result) {
       return [result.task, result.value]
     }
-    return undefined
   }
 
   private hasTask(list: Task[], task: Task): boolean {
@@ -406,7 +411,11 @@ export default class AsyncTask<Task, Result> {
     }
   }
 
-  static wrapError(e: any): Error {
+  /**
+   * wrap error info, if it's not instanceof Error, wrap it with Error
+   * @returns Error instance
+   */
+  static wrapError(e: unknown): Error {
     if (e instanceof Error) return e
     const newError = new Error('task failed')
     // @ts-ignore
@@ -457,6 +466,29 @@ export default class AsyncTask<Task, Result> {
         return [t, result.status === 'fulfilled' ? result.value : result.reason]
       })
     }
+  }
+  /**
+   * check whether the given values are equal (with deep comparison)
+   */
+  static isEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true
+    const typeA = typeof a
+    const typeB = typeof b
+    if (typeA !== typeB) return false
+    // @ts-ignore
+    // for nan
+    if (typeA === 'number' && isNaN(a) && isNaN(b)) return true
+    // none object type, aka primitive types, are checked by the first line
+    if (typeA !== 'object') return false
+    // if one of them is regexp, check via regexp literal
+    if (a instanceof RegExp || b instanceof RegExp) return String(a) === String(b)
+    // only one is array
+    if (Array.isArray(a) !== Array.isArray(b)) return false
+    // @ts-ignore
+    if (Object.keys(a).length !== Object.keys(b).length) return false
+    // @ts-ignore
+    if (Object.keys(a).some(k => !AsyncTask.isEqual(a[k], b[k]))) return false
+    return true
   }
 }
 
