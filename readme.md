@@ -5,6 +5,7 @@
   <a href="https://github.com/oe/async-task-schedule/actions">
     <img src="https://github.com/oe/async-task-schedule/actions/workflows/main.yml/badge.svg" alt="github actions">
   </a>
+  <img src="https://img.shields.io/badge/coverage-100%25-brightgreen" alt="use it with confident">
   <a href="#readme">
     <img src="https://badgen.net/badge/Built%20With/TypeScript/blue" alt="code with typescript" height="20">
   </a>
@@ -35,40 +36,42 @@ npm install async-task-schedule -S
 ## Usage
 
 ```ts
-import AsyncTask from 'async-task-schedule'
+import TaskSchedule from 'async-task-schedule'
 
-const asyncTask = new AsyncTask({
+const taskSchedule = new TaskSchedule({
   batchDoTasks: async (names: string[]) => {
     count += 1
     return names.map((n) => ([n, `${n}${count}`] as [string, string]))
   },
 })
 
-asyncTask.dispatch(['a', 'b']).then(console.log)
-asyncTask.dispatch(['b', 'c']).then(console.log)
-asyncTask.dispatch(['d', 'c']).then(console.log)
-asyncTask.dispatch('c').then(console.log)
+taskSchedule.dispatch(['a', 'b']).then(console.log)
+taskSchedule.dispatch(['b', 'c']).then(console.log)
+taskSchedule.dispatch(['d', 'c']).then(console.log)
+taskSchedule.dispatch('c').then(console.log)
 // batchDoTasks will be only called once
 
 ```
 **NOTICE**: in following example, tasks won't combine
 ```ts
 // batchDoTasks will be executed 3 times due to javascript language features
-const result1 = await asyncTask.dispatch(['a', 'b'])
-const result2 = await asyncTask.dispatch(['b', 'c'])
-const result3 = await asyncTask.dispatch(['d', 'c'])
-const result4 = await asyncTask.dispatch('c')
+const result1 = await taskSchedule.dispatch(['a', 'b'])
+const result2 = await taskSchedule.dispatch(['b', 'c'])
+const result3 = await taskSchedule.dispatch(['d', 'c'])
+const result4 = await taskSchedule.dispatch('c')
 ```
 
 
 ## API
 
-### constructor(options: IAsyncTask)
+### constructor(options: ITaskScheduleOptions)
 
 options define:
 
 ```ts
-interface IAsyncTask {
+// `Task` for single task's parameters
+// `Result` for single task's response
+interface ITaskScheduleOptions<Task, Result> {
   /**
    * action to do batch tasks, can be async or sync function
    *  Task: single task request info
@@ -115,6 +118,7 @@ interface IAsyncTask {
    *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
    */
   taskWaitingStrategy: 'throttle' | 'debounce'
+
   /**
    * task waiting time in milliseconds, default 50ms
    *     differently according to taskWaitingStrategy
@@ -285,7 +289,7 @@ suppose we use browser native `fetch` to send request, we can do so to make an i
 
 ```ts
 
-const fetchSchedule = new AsyncTask({
+const fetchSchedule = new TaskSchedule({
   async doTask(cfg: {resource: string, options?: RequestInit}) {
     return await fetch(cfg.resource, cfg.options)
   },
@@ -331,21 +335,21 @@ async function batchGetUsers(userIds: string[]): Promise<Array<[string, {id: str
   return users.map(user => ([user.id, user]))
 }
 
-const getUserAsyncTask = new AsyncTask({
+const getUserSchedule = new TaskSchedule({
   batchDoTasks: batchGetUsers,
   // cache user info forever
   invalidAfter: 0,
 })
 
 const result = await Promise.all([
-  getUserAsyncTask.dispatch(['user1', 'user2']),
-  getUserAsyncTask.dispatch(['user3', 'user2'])
+  getUserSchedule.dispatch(['user1', 'user2']),
+  getUserSchedule.dispatch(['user3', 'user2'])
 ])
 // only one request will be sent via getUsers with userIds ['user1', 'user2', 'user3']
 
 // request combine won't works when using await separately
-const result1 = await getUserAsyncTask.dispatch(['user1', 'user2'])
-const result2 = await getUserAsyncTask.dispatch(['user3', 'user2'])
+const result1 = await getUserSchedule.dispatch(['user1', 'user2'])
+const result2 = await getUserSchedule.dispatch(['user3', 'user2'])
 ```
 
 
@@ -354,7 +358,7 @@ const result2 = await getUserAsyncTask.dispatch(['user3', 'user2'])
 by setting `taskExecStrategy` to `serial` and using smaller `maxBatchCount`(you can even set it to `1`), you can achieve this easily
 
 ```ts
-const asyncTask = new AsyncTask({
+const taskSchedule = new TaskSchedule({
   ...,
   taskExecStrategy: 'serial',
   maxBatchCount: 2,
