@@ -5,7 +5,7 @@
   <a href="https://github.com/oe/async-task-schedule/actions">
     <img src="https://github.com/oe/async-task-schedule/actions/workflows/main.yml/badge.svg" alt="github actions">
   </a>
-  <img src="https://img.shields.io/badge/coverage-100%25-brightgreen" alt="use it with confident">
+  <img src="https://img.shields.io/badge/coverage-100%25-brightgreen?logo=codecov" alt="use it with confident">
   <a href="#readme">
     <img src="https://badgen.net/badge/Built%20With/TypeScript/blue" alt="code with typescript" height="20">
   </a>
