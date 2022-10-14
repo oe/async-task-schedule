@@ -65,36 +65,38 @@ const result4 = await asyncTask.dispatch('c')
 
 ### constructor(options: IAsyncTask)
 
+options define:
+
 ```ts
 interface IAsyncTask {
   /**
-   * action to do batch tasks
+   * action to do batch tasks, can be async or sync function
    *  Task: single task request info
    *  Result: single task success response
    * 
    * batchDoTasks should receive multitasks, and return tuple of task and response or error in array
    * one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
    */
-  private batchDoTasks: (tasks: Task[]) => Promise<Array<[Task, Result | Error ]>>
+  batchDoTasks: (tasks: Task[]) => Promise<Array<[Task, Result | Error ]>> | Array<[Task, Result | Error ]>
 
   /**
-   * action to do single task
+   * action to do single task, can be async or sync function
    *  one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
    */
-  doTask?: ((task: Task) => Promise<Result>)
+  doTask?: (task: Task) => Promise<Result> | Result
 
   /**
    * check whether two tasks are equal
    *  it helps to avoid duplicated tasks
    *  default: (a, b) => a === b
    */
-  private isSameTask?: (a: Task, b: Task) => boolean
+  isSameTask?: (a: Task, b: Task) => boolean
 
   /**
    * max task count for batchDoTasks, default unlimited
    *  undefined or 0 for unlimited
    */
-  private maxBatchCount?: number
+  maxBatchCount?: number
 
   /**
    * batch tasks executing strategy, default parallel
@@ -105,54 +107,215 @@ interface IAsyncTask {
    *    if serial specified, when tasks are executing, new comings will wait for them to complete
    *    it's especially useful to cool down task requests
    */
-  private taskExecStrategy: 'parallel' | 'serial'
+  taskExecStrategy: 'parallel' | 'serial'
 
   /**
    * task waiting stragy, default to debounce
    *  throttle: tasks will combined and dispatch every `maxWaitingGap`
    *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
    */
-  private taskWaitingStrategy: 'throttle' | 'debounce'
+  taskWaitingStrategy: 'throttle' | 'debounce'
   /**
    * task waiting time in milliseconds, default 50ms
    *     differently according to taskWaitingStrategy
    */
-  private maxWaitingGap: number
+  maxWaitingGap: number
 
 
   /**
-   * validity of the result(in ms), default unlimited
-   *    undefined or 0 for unlimited
-   * cache is lazy cleaned after invalid
+   * task result caching duration(in milliseconds), default to 1000ms (1s)
+   * >`undefined` or `0` for unlimited  
+   * >set to minimum value `1` to disable caching  
+   * >`function` to specified specified each task's validity
+   * 
+   * *cache is lazy cleaned after invalid*
    */
-  private invalidAfter?: number
+  invalidAfter?: number | ((cached: readonly [Task, Result | Error]) => number)
 
   /**
    * retry failed tasks next time after failing, default true
    */
-  private retryWhenFailed?: boolean
+  retryWhenFailed?: boolean
 }
 ```
 
-### dispatch(tasks: Task[]):Promise<Array<[Task, Result | Error]>>
-dispatch multitasks at a time, will get tuple of task and response in array
+example:
+```ts
+import TaskSchedule from 'async-task-schedule'
 
+const taskSchedule = new TaskSchedule({
+  doTask(n) { 
+    console.log(`do task with ${n}`)
+    return n * n
+  },
+  invalidAfter: 0
+})
+
+const result = await taskSchedule.dispatch([1,2,3,1,2])
+// get first result
+const resultOf1 = result[0][1] // 1
+// doTask won't be called
+const result11 = await taskSchedule.dispatch(1) // 1
+
+// clean all cached result
+taskSchedule.cleanCache()
+// doTask will be call again
+const result12 = await taskSchedule.dispatch(1) // 1
+
+```
+
+### dispatch(tasks: Task[]):Promise<Array<[Task, Result | Error]>>
+dispatch multitasks at a time, will get tuple of task and response in array with corresponding order of `tasks`
 this method won't throw any error, it will fulfil even partially failed, you can check whether its success by `tuple[1] instanceof Error`
+
+```ts
+import TaskSchedule from 'async-task-schedule'
+
+const taskSchedule = new TaskSchedule({
+  doTask(n) { 
+    console.log(`do task with ${n}`)
+    if (n % 2) throw new Error(`${n} is unsupported`)
+    return n * n
+  },
+  invalidAfter: 0
+})
+
+const result = await taskSchedule.dispatch([1,2,3,1,2])
+// get first result
+const resultOf1 = result[0][1] // 1
+// second result is error
+const isError = result[1][1] instanceof Error // error object
+
+
+try {
+  // will throw an error
+  const result2 = await taskSchedule.dispatch(2) // 1
+} catch(error) {
+  console.warn(error)
+}
+```
+
 
 ### dispatch(tasks: Task):Promise<Result>
 dispatch a task, will get response if success, or throw an error
+
+```ts
+import TaskSchedule from 'async-task-schedule'
+
+const taskSchedule = new TaskSchedule({
+  doTask(n) { 
+    console.log(`do task with ${n}`)
+    if (n % 2) throw new Error(`${n} is unsupported`)
+    return n * n
+  },
+  invalidAfter: 0
+})
+
+const result1 = await taskSchedule.dispatch(1) // 1
+try {
+  const result2 = await taskSchedule.dispatch(2),
+} catch(error) {
+  console.warn(error)
+}
+```
 
 ### cleanCache
 clean cached tasks' result, so older task will trigger new request and get fresh response.
 
 attention: this action may not exec immediately, it will take effect after all tasks are done
 
+```ts
+import TaskSchedule from 'async-task-schedule'
+
+const taskSchedule = new TaskSchedule({
+  doTask(n) { 
+    console.log(`do task with ${n}`)
+    return n * n
+  },
+  invalidAfter: 0
+})
+
+await Promise.all([
+  taskSchedule.dispatch([1,2,3,1,2]),
+  taskSchedule.dispatch([1,9,10,12,22]),
+])
+// clean all cached result
+taskSchedule.cleanCache()
+// second result is error
+const result1 = await taskSchedule.dispatch(1),
+
+```
+
+## utils methods
+there are some utils method as static members of `async-task-schedule`
+
+###  chunk<T>(arr: T[], size: number): T[][]
+split array to chunks with specified size
+
+```ts
+import TaskSchedule from 'async-task-schedule'
+
+const chunked = TaskSchedule.chunk([1,2,3,4,5,6,7], 3)
+// [[1,2,3], [4,5,6], [7]]
+```
+
+### isEqual(a: unknown, b: unknown): boolean
+check whether the given values are equal (with deep comparison)
+
+```ts
+import TaskSchedule from 'async-task-schedule'
+
+TaskSchedule.isEqual(1, '1') // false
+TaskSchedule.isEqual('1', '1') // true
+TaskSchedule.isEqual(NaN, NaN) // true
+TaskSchedule.isEqual({a: 'a', b: 'b'}, {b: 'b', a: 'a'}) // true
+TaskSchedule.isEqual({a: 'a', b: 'b', c: {e: [1,2,3]}}, {b: 'b', c: {e: [1,2,3]}, a: 'a'}) // true
+TaskSchedule.isEqual({a: 'a', b: /acx/}, {b: new RegExp('acx'), a: 'a'}) // true
+```
+you can use it to check whether two tasks are equal / find specified task
+
+
 ## Receipts
 
 ### how to integrate with existing code
 what you need to do is to wrap your existing task executing function into a new `batchDoTasks`
 
-#### example 1
+### example 1: cache `fetch`
+suppose we use browser native `fetch` to send request, we can do so to make an improvement:
+
+```ts
+
+const fetchSchedule = new AsyncTask({
+  async doTask(cfg: {resource: string, options?: RequestInit}) {
+    return await fetch(cfg.resource, cfg.options)
+  },
+  // 0 for forever
+  // set a minimum number 1 can disable cache after 1 millisecond
+  invalidAfter([cfg, result]) {
+    // cache get request for 3s
+    if (!cfg.options || !cfg.options.method || !cfg.options.method.toLowerCase() === 'get') {
+      // cache sys static config forever
+      if (/\/sys\/static-config$/.test(cfg.resource)) return 0
+      return 3000
+    }
+    // disable other types request
+    return 1
+  }
+})
+
+const betterFetch = (resource: string, options?: RequestInit) => {
+  return fetchSchedule.dispatch({resource, options})
+}
+
+// than you can replace fetch with betterFetch
+```
+
+with those codes above:
+1. you can remove redundant request(requests with same parameters at same time will be reduced to one, this may have some side effects)
+2. get request can be cached in a short time
+
+
+#### example 2: deal with `getUsers`
 suppose we have a method `getUsers` defined as follows:
 
 ```ts
@@ -169,7 +332,9 @@ async function batchGetUsers(userIds: string[]): Promise<Array<[string, {id: str
 }
 
 const getUserAsyncTask = new AsyncTask({
-  batchDoTasks: batchGetUsers
+  batchDoTasks: batchGetUsers,
+  // cache user info forever
+  invalidAfter: 0,
 })
 
 const result = await Promise.all([
@@ -183,40 +348,6 @@ const result1 = await getUserAsyncTask.dispatch(['user1', 'user2'])
 const result2 = await getUserAsyncTask.dispatch(['user3', 'user2'])
 ```
 
-#### example 2
-if the request parameter is an object, then we should provide a `isSameTask` to identify unique task
-
-suppose we have a method `decodeGeoPoints` defined as follows:
-
-```ts
-decodeGeoPoints(points: Array<{lat: number, long: number}>) -> Promise<[{point: {lat: number, long: number}, title: string, description: string, country: string}]>
-``` 
-
-then we can integrate as follows:
-
-```ts
-async function batchDecodeGeoPoints(points: Array<{lat: number, long: number}>): Promise<Array<[{lat: number, long: number}, {point: {lat: number, long: number}, title: string, description: string, country: string}]>> {
-  // there is no need to try/catch, errors will be handled properly
-  const pointInfos = await decodeGeoPoints(userIds)
-  // convert point info array into tuple of point and point info in array
-  return pointInfos.map(info => ([info.point, info]))
-}
-
-const isSamePoint = (a: {lat: number, long: number}, b: {lat: number, long: number}) => a.lat === b.lat && a.long === b.long
-
-const decodePointsAsyncTask = new AsyncTask({
-  batchDoTasks: batchDecodeGeoPoints,
-  isSameTask: isSamePoint
-})
-
-decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 11.1023}]).then(console.log)
-decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 44.2478}]).then(console.log)
-// only one request will be sent via decodeGeoPoints
-
-// request combine won't work when using await
-const result1 = await decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 11.1023}])
-const result2 = await decodePointsAsyncTask.dispatch([{lat: 23.232, long: 43.121}, {lat: 33.232, long: 44.2478}]).then(console.log)
-```
 
 
 ### how to cool down massive requests at the same time

@@ -1,7 +1,7 @@
 export type ITaskExecStrategy = 'parallel' | 'serial'
 export type ITaskWaitingStrategy = 'throttle' | 'debounce'
 
-export default class AsyncTask<Task, Result> {
+export class AsyncTask<Task, Result> {
   /**
    * action to do batch tasks
    *  Task: single task request info
@@ -51,11 +51,12 @@ export default class AsyncTask<Task, Result> {
   /**
    * validity(caching duration) of the result(in ms), default unlimited
    *    undefined or 0 for unlimited
+   *    function to specified specified each task's validity
    *  default to 1s
    * 
    * cache is lazy cleaned after invalid
    */
-  private invalidAfter?: number
+  private invalidAfter?: number | ((cached: readonly [Task, Result | Error]) => number)
 
   /**
    * retry failed tasks next time after failing, default true
@@ -124,13 +125,14 @@ export default class AsyncTask<Task, Result> {
      */
     maxWaitingGap?: number
     /**
-     * task result caching duration(in milliseconds), default to 1s  
+     * task result caching duration(in milliseconds), default to 1000ms (1s)
      * >`undefined` or `0` for unlimited  
      * >set to minimum value `1` to disable caching  
+     * >`function` to specified specified each task's validity
      * 
      * *cache is lazy cleaned after invalid*
      */
-    invalidAfter?: number
+    invalidAfter?: number | ((cached: readonly [Task, Result | Error]) => number)
     /**
      * retry failed tasks next time after failing, default true
      */
@@ -165,6 +167,7 @@ export default class AsyncTask<Task, Result> {
     this.retryWhenFailed = userOptions.retryWhenFailed
     this.invalidAfter = userOptions.invalidAfter
     this.tryTodDoTasks = this.tryTodDoTasks.bind(this)
+    this.dispatch = this.dispatch.bind(this)
   }
   /**
    * execute task, get task result in promise
@@ -378,7 +381,7 @@ export default class AsyncTask<Task, Result> {
       const defaultValue = new Error('not found')
       doneArray = tasks.map((t) => {
         const taskResult = result.find((item) => this.isSameTask(item[0], t))
-        return { task: t, value: taskResult?.[1] || defaultValue, time: now }
+        return { task: t, value: taskResult ? taskResult[1] : defaultValue, time: now }
       })
     }
     this.doneTaskMap = this.doneTaskMap.concat(doneArray)
@@ -401,6 +404,8 @@ export default class AsyncTask<Task, Result> {
         return false
       }
       if (this.invalidAfter) {
+        const time = typeof this.invalidAfter === 'function' ? this.invalidAfter([item.task, item.value]) : this.invalidAfter
+        if (!time) return true
         return now - item.time <= this.invalidAfter!
       }
       return true
@@ -477,6 +482,7 @@ export default class AsyncTask<Task, Result> {
     if (typeA !== 'object') return false
     // if one of them is regexp, check via regexp literal
     if (a instanceof RegExp || b instanceof RegExp) return String(a) === String(b)
+    if (a instanceof Date || b instanceof Date) return String(a) === String(b)
     // only one is array
     if (Array.isArray(a) !== Array.isArray(b)) return false
     // @ts-ignore
@@ -487,4 +493,6 @@ export default class AsyncTask<Task, Result> {
   }
 }
 
-export { AsyncTask }
+// makes parcel correctly bundle es6 and commonjs
+//@ts-ignore
+export = AsyncTask

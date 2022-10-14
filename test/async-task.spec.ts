@@ -237,6 +237,7 @@ describe('async-task-schedule', () => {
       // @ts-ignore
       expect(at.doneTaskMap.length).toBe(0)
     })
+
   })
 
   describe('invalidAfter', () => {
@@ -274,6 +275,32 @@ describe('async-task-schedule', () => {
       // @ts-ignore
       expect(at.doneTaskMap.length).toEqual(4)
       expect(task1Count).toEqual(1)
+    })
+
+    it('custom validity', async() => {
+      const callCount: Record<number, number> = {} 
+      const at = new AsyncTask({
+        doTask(n: number) {
+          callCount[n] = callCount[n] ? callCount[n] + 1 : 1
+          return n * n
+        },
+        // cache only n < 2
+        invalidAfter: ([n, r]) => {
+          if (n < 2) return 0
+          return 1
+        },
+      })
+
+      await at.dispatch([1,2,3,4])
+      await delay(20)
+      await at.dispatch(1)
+      await at.dispatch([1, 2,3,4,5])
+      await at.dispatch([1, 2,9,4,5])
+      await at.dispatch(1)
+      // @ts-ignore
+      expect(at.doneTaskMap.length).toEqual(1)
+      expect(callCount[1]).toEqual(1)
+      expect(callCount[2]).toEqual(3)
     })
   })
 
