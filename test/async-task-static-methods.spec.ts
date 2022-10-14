@@ -120,6 +120,13 @@ describe('async-task static methods', () => {
       expect(AsyncTask.isEqual(/cc/, /aa/i)).toEqual(false)
       expect(AsyncTask.isEqual(/ad/, /ad/)).toEqual(true)
     })
+    it('date', () => {
+      expect(AsyncTask.isEqual(new Date('xxx'), /aa/i)).toEqual(false)
+      expect(AsyncTask.isEqual(new Date('xxx'), new Date())).toEqual(false)
+      expect(AsyncTask.isEqual(new Date(1234), new Date())).toEqual(false)
+      expect(AsyncTask.isEqual(new Date('2022/10/20'), new Date('2022/10/20'))).toEqual(true)
+      expect(AsyncTask.isEqual(new Date('zbc'), new Date('abc'))).toEqual(true)
+    })
 
     it('array', () => {
       expect(AsyncTask.isEqual([], [])).toEqual(true)
