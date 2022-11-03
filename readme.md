@@ -37,12 +37,17 @@ npm install async-task-schedule -S
 
 ```ts
 import TaskSchedule from 'async-task-schedule'
-
+let count = 0
 const taskSchedule = new TaskSchedule({
-  batchDoTasks: async (names: string[]) => {
-    count += 1
-    return names.map((n) => ([n, `${n}${count}`] as [string, string]))
-  },
+    doTask: async (name: string) => {
+        count += 1
+      return `${name}${count}`
+    },
+    // or use this will do the same
+    // batchDoTasks: async (names: string[]) => {
+    //   count += 1
+    //   return names.map((n) => `${n}${count}`)
+    // },
 })
 
 taskSchedule.dispatch(['a', 'b']).then(console.log)
@@ -77,10 +82,10 @@ interface ITaskScheduleOptions<Task, Result> {
    *  Task: single task request info
    *  Result: single task success response
    * 
-   * batchDoTasks should receive multitasks, and return tuple of task and response or error in array
+   * batchDoTasks should receive multitasks, and return result or error in order
    * one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
    */
-  batchDoTasks: (tasks: Task[]) => Promise<Array<[Task, Result | Error ]>> | Array<[Task, Result | Error ]>
+  batchDoTasks: (tasks: Task[]) => Promise<Array<Result | Error>> | Array<Result | Error>
 
   /**
    * action to do single task, can be async or sync function
@@ -91,7 +96,7 @@ interface ITaskScheduleOptions<Task, Result> {
   /**
    * check whether two tasks are equal
    *  it helps to avoid duplicated tasks
-   *  default: (a, b) => a === b
+   *  default: AsyncTask.isEqual (deep equal)
    */
   isSameTask?: (a: Task, b: Task) => boolean
 
@@ -128,9 +133,9 @@ interface ITaskScheduleOptions<Task, Result> {
 
   /**
    * task result caching duration(in milliseconds), default to 1000ms (1s)
-   * >`undefined` or `0` for unlimited  
-   * >set to minimum value `1` to disable caching  
-   * >`function` to specified specified each task's validity
+   * > `undefined` or `0` for unlimited  
+   * > set to minimum value `1` to disable caching  
+   * > `function` to specified specified each task's validity
    * 
    * *cache is lazy cleaned after invalid*
    */
@@ -157,7 +162,7 @@ const taskSchedule = new TaskSchedule({
 
 const result = await taskSchedule.dispatch([1,2,3,1,2])
 // get first result
-const resultOf1 = result[0][1] // 1
+const resultOf1 = result[0] // 1
 // doTask won't be called
 const result11 = await taskSchedule.dispatch(1) // 1
 
@@ -168,9 +173,9 @@ const result12 = await taskSchedule.dispatch(1) // 1
 
 ```
 
-### dispatch(tasks: Task[]):Promise<Array<[Task, Result | Error]>>
-dispatch multitasks at a time, will get tuple of task and response in array with corresponding order of `tasks`
-this method won't throw any error, it will fulfil even partially failed, you can check whether its success by `tuple[1] instanceof Error`
+### dispatch(tasks: Task[]):Promise<Array<Result | Error>>
+dispatch multitasks at a time, will get response with corresponding order of `tasks`
+this method won't throw any error, it will fulfil even partially failed, you can check whether its success by `response instanceof Error`
 
 ```ts
 import TaskSchedule from 'async-task-schedule'
@@ -186,9 +191,9 @@ const taskSchedule = new TaskSchedule({
 
 const result = await taskSchedule.dispatch([1,2,3,1,2])
 // get first result
-const resultOf1 = result[0][1] // 1
+const resultOf1 = result[0] // 1
 // second result is error
-const isError = result[1][1] instanceof Error // error object
+const isError = result[1] instanceof Error // error object
 
 
 try {
@@ -240,13 +245,13 @@ const taskSchedule = new TaskSchedule({
 })
 
 await Promise.all([
-  taskSchedule.dispatch([1,2,3,1,2]),
-  taskSchedule.dispatch([1,9,10,12,22]),
+  taskSchedule.dispatch([1, 2, 3, 1, 2]),
+  taskSchedule.dispatch([1, 9, 10, 12, 22]),
 ])
 // clean all cached result
 taskSchedule.cleanCache()
-// second result is error
-const result1 = await taskSchedule.dispatch(1),
+// task will execute again
+const result = await taskSchedule.dispatch(1),
 
 ```
 
@@ -284,7 +289,7 @@ you can use it to check whether two tasks are equal / find specified task
 ### how to integrate with existing code
 what you need to do is to wrap your existing task executing function into a new `batchDoTasks`
 
-### example 1: cache `fetch`
+#### example 1: cache `fetch`
 suppose we use browser native `fetch` to send request, we can do so to make an improvement:
 
 ```ts
@@ -323,7 +328,7 @@ with those codes above:
 suppose we have a method `getUsers` defined as follows:
 
 ```ts
-getUsers(userIds: string[]) -> Promise<[{id: string, name: string, email: string}]>
+getUsers(userIds: string[]) => Promise<[{code: string, message: string, id?: string, name?: string, email?: string}]>
 ``` 
 
 then we can implement a batch version:
@@ -331,8 +336,8 @@ then we can implement a batch version:
 async function batchGetUsers(userIds: string[]): Promise<Array<[string, {id: string, name: string, email: string}]>> {
   // there is no need to try/catch, errors will be handled properly
   const users = await getUsers(userIds)
-  // convert users array into tuple of user id and user info in array
-  return users.map(user => ([user.id, user]))
+  // convert invalid users to error
+  return users.map(user => (user.code === 'failed' ? new Error(user.message) : user))
 }
 
 const getUserSchedule = new TaskSchedule({
@@ -352,6 +357,7 @@ const result1 = await getUserSchedule.dispatch(['user1', 'user2'])
 const result2 = await getUserSchedule.dispatch(['user3', 'user2'])
 ```
 
+If you got a batch version function, you just need to make sure it throw an error when error occurred.
 
 
 ### how to cool down massive requests at the same time

@@ -7,9 +7,9 @@ export class AsyncTask<Task, Result> {
    *  Task: single task request info
    *  Result: single task success response
    * 
-   * batchDoTasks should receive multi tasks, and return tuple of task and response or error in array
+   * batchDoTasks should receive multi tasks, and return result or error in order
    */
-  private batchDoTasks: (tasks: Task[]) => Promise<Array<[Task, Result | Error ]>> | Array<[Task, Result | Error ]>
+  private batchDoTasks: (tasks: Task[]) => Promise<Array<Result | Error>> | Array<Result | Error>
 
   /**
    * check whether two tasks are equal
@@ -110,7 +110,7 @@ export class AsyncTask<Task, Result> {
      * action to do batch tasks
      *  one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
      */
-    batchDoTasks?: (tasks: Task[]) => Promise<Array<[Task, Result | Error ]>> | Array<[Task, Result | Error ]>,
+    batchDoTasks?: (tasks: Task[]) => Promise<Array<Result | Error>> | Array<Result | Error>,
     /**
      * action to do single task
      *  one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
@@ -176,7 +176,7 @@ export class AsyncTask<Task, Result> {
   /**
    * execute tasks, get response in tuple of task and result/error
    */
-  async dispatch<T extends readonly Task[] | []>(tasks: T): Promise<{ [k in keyof T]: [Task, Result | Error] } >
+  async dispatch<T extends readonly Task[] | []>(tasks: T): Promise<{ [k in keyof T]: Result | Error } >
   async dispatch(tasks: Task[] | Task) {
     this.cleanupTasks()
     try {
@@ -339,16 +339,16 @@ export class AsyncTask<Task, Result> {
    * @param tasks tasks to check
    * @param defaultResult default result if not found
    */
-  private tryGetTaskResult(tasks: Task[] | Task) {
+  private tryGetTaskResult(tasks: Task[] | Task): (Result | Error) | Array<Result | Error> {
     // no cached data and no default result provided
     if (!this.doneTaskMap.length) throw new Error('no done task')
 
     if (Array.isArray(tasks)) {
-      const result: Array<[Task, Result | Error]> = []
+      const result: Array<Result | Error> = []
       return tasks.reduce((acc, task) => {
         const val = this.getTaskResult(task) || false
         if (!val) throw new Error('not found')
-        acc.push(val)
+        acc.push(val[1])
         return acc
       }, result)
     }
@@ -372,16 +372,16 @@ export class AsyncTask<Task, Result> {
     this.doingTasks = this.doingTasks.filter((f) => !this.hasTask(tasks, f))
   }
 
-  private updateResultMap(tasks: Task[], result: Array<[Task, Result | Error]> | Error) {
+  private updateResultMap(tasks: Task[], result: Array<Result | Error> | Error) {
     const now = Date.now()
     let doneArray: any[] = []
     if (result instanceof Error) {
       doneArray = tasks.map((t) => ({ task: t, value: result, time: now }))
     } else {
       const defaultValue = new Error('not found')
-      doneArray = tasks.map((t) => {
-        const taskResult = result.find((item) => this.isSameTask(item[0], t))
-        return { task: t, value: taskResult ? taskResult[1] : defaultValue, time: now }
+      doneArray = tasks.map((t, idx) => {
+        const taskResult = result.length > idx ? result[idx] : defaultValue
+        return { task: t, value: taskResult ? taskResult : defaultValue, time: now }
       })
     }
     this.doneTaskMap = this.doneTaskMap.concat(doneArray)
@@ -458,12 +458,12 @@ export class AsyncTask<Task, Result> {
    * @param doTask action to do single task
    * @returns batch version to do multi tasks
    */
-  static wrapDoTask<T, R>(doTask: (t: T) => Promise<R> | R): (tasks: T[]) => Promise<Array<[T, R | Error ]>> {
-    return async function (tasks: T[]): Promise<Array<[T, R | Error]>> {
+  static wrapDoTask<T, R>(doTask: (t: T) => Promise<R> | R): (tasks: T[]) => Promise<Array< R | Error>> {
+    return async function (tasks: T[]): Promise<Array<R | Error>> {
       const results = await Promise.all(tasks.map(t => AsyncTask.runTaskExecutor(doTask, t)))
       return tasks.map((t, idx) => {
         const result = results[idx]
-        return [t, result.status === 'fulfilled' ? result.value : result.reason]
+        return result.status === 'fulfilled' ? result.value : result.reason
       })
     }
   }

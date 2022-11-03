@@ -11,7 +11,7 @@ describe('async-task-schedule', () => {
       const at = new AsyncTask({
         batchDoTasks: async (names: string[]) => {
           count += 1
-          return names.map((n) => ([n, `${n}${count}`] as [string, string]))
+          return names.map((n) => (`${n}${count}`))
         },
       })
 
@@ -21,25 +21,25 @@ describe('async-task-schedule', () => {
         at.dispatch(['b', 'd', 'e']),
         at.dispatch('e')
       ])
-      expect(result[0][0][1]).toEqual(result[1][0][1])
+      expect(result[0][0]).toEqual(result[1][0])
       expect(count).toBe(1)
       // @ts-ignore
-      expect(result[3]).toEqual(result[2][2][1])
+      expect(result[3]).toEqual(result[2][2])
     })
 
     it('should get a not found error when result is missing', async () => {
       const at = new AsyncTask({
         // @ts-ignore
         batchDoTasks: async (names: number[]) => {
-          return names.map((n) => n % 2 ? ([n, `${n}-result`] as [number, string]) : false).filter(Boolean)
+          return names.map((n) => n % 2 ? `${n}-result` : new Error('not supported'))
         },
       })
 
       const result = await at.dispatch([1, 2, 3])
-      const respFor2 = result.find(item => item[0] === 2)
+      const respFor2 = result[1]
       expect(respFor2).toBeDefined()
-      expect(respFor2![1]).toBeInstanceOf(Error)
-      expect(result[0][1]).toContain('-result')
+      expect(respFor2!).toBeInstanceOf(Error)
+      expect(result[0]).toContain('-result')
     })
   })
 
@@ -56,7 +56,7 @@ describe('async-task-schedule', () => {
         at.dispatch([5, 1, 7]),
         at.dispatch([7, 3, 21]),
       ])
-      expect(result[2][0][1] > 0).toEqual(true)
+      expect(result[2][0] > 0).toEqual(true)
       try {
         const result = await at.dispatch(21)
         fail('should go into error')
@@ -77,7 +77,7 @@ describe('async-task-schedule', () => {
               countOf2++;
               result = countOf2 < 2 ? new Error('new error') : n * n
             }
-            return [n, result]
+            return result
           })
         },
         retryWhenFailed: true
@@ -97,17 +97,17 @@ describe('async-task-schedule', () => {
       const at = new AsyncTask({
         // @ts-ignore
         batchDoTasks: async (names: number[]) => {
-          return names.map((n) => n % 2 ? ([n, `${n}-result`] as [number, string]) : false).filter(Boolean)
+          return names.map((n) => n % 2 ? (`${n}-result`) : new Error('not support'))
         },
         taskExecStrategy: 'serial',
         maxBatchCount: 2,
       })
 
       const result = await at.dispatch([1, 2, 3])
-      const respFor2 = result.find(item => item[0] === 2)
+      const respFor2 = result[1]
       expect(respFor2).toBeDefined()
-      expect(respFor2![1]).toBeInstanceOf(Error)
-      expect(result[0][1]).toContain('-result')
+      expect(respFor2!).toBeInstanceOf(Error)
+      expect(result[0]).toContain('-result')
     })
 
     it('serial waiting', async () => {
@@ -117,7 +117,7 @@ describe('async-task-schedule', () => {
         // @ts-ignore
         batchDoTasks: async (names: number[]) => {
           await delay(waitTime)
-          return names.map((n) => n % 2 ? ([n, `${n}-result`] as [number, string]) : false).filter(Boolean)
+          return names.map((n) => n % 2 ? `${n}-result` : new Error(`not supported ${n}`)).filter(Boolean)
         },
         taskExecStrategy: 'serial',
         maxBatchCount: 2,
@@ -149,7 +149,7 @@ describe('async-task-schedule', () => {
         // @ts-ignore
         batchDoTasks: async (names: number[]) => {
           await delay(waitTime)
-          return names.map((n) => n % 2 ? ([n, `${n}-result`] as [number, string]) : false).filter(Boolean)
+          return names.map((n) => n % 2 ? `${n}-result` : new Error('not supported'))
         },
         taskWaitingStrategy: 'throttle',
         maxBatchCount: 2,
@@ -309,12 +309,12 @@ describe('async-task-schedule', () => {
       const at = new AsyncTask({
         batchDoTasks(nums: number[]) {
           const newNums = nums.slice(0, nums.length - 2)
-          return newNums.map(n => [n, n * n])
+          return newNums.map(n => n * n)
         },
       })
       const result = await at.dispatch([1,2,3,4])
-      expect(result[3][1]).toBeInstanceOf(Error)
-      expect(result[1][1]).toEqual(4)
+      expect(result[3]).toBeInstanceOf(Error)
+      expect(result[1]).toEqual(4)
     })
 
     it('should all fill with error when batchDoTasks failed', async() => {
@@ -324,8 +324,8 @@ describe('async-task-schedule', () => {
         },
       })
       const result = await at.dispatch([1,2,3,4])
-      expect(result[3][1]).toBeInstanceOf(Error)
-      expect(result[1][1]).toBeInstanceOf(Error)
+      expect(result[3]).toBeInstanceOf(Error)
+      expect(result[1]).toBeInstanceOf(Error)
     })
 
     it('should all fill with error when batchDoTasks failed and chunked', async() => {
@@ -336,8 +336,8 @@ describe('async-task-schedule', () => {
         maxBatchCount: 2,
       })
       const result = await at.dispatch([1,2,3,4])
-      expect(result[3][1]).toBeInstanceOf(Error)
-      expect(result[1][1]).toBeInstanceOf(Error)
+      expect(result[3]).toBeInstanceOf(Error)
+      expect(result[1]).toBeInstanceOf(Error)
     })
 
     it('batchDoTasks failed, chunked, serial', async() => {
@@ -349,8 +349,8 @@ describe('async-task-schedule', () => {
         maxBatchCount: 2,
       })
       const result = await at.dispatch([1,2,3,4])
-      expect(result[3][1]).toBeInstanceOf(Error)
-      expect(result[1][1]).toBeInstanceOf(Error)
+      expect(result[3]).toBeInstanceOf(Error)
+      expect(result[1]).toBeInstanceOf(Error)
     })
   })
 
