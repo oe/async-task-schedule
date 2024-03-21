@@ -139,7 +139,7 @@ interface ITaskScheduleOptions<Task, Result> {
    * 
    * *cache is lazy cleaned after invalid*
    */
-  invalidAfter?: number | ((cached: readonly [Task, Result | Error]) => number)
+  invalidAfter?: number | ((task: Task, result: Result | Error) => number)
 
   /**
    * retry failed tasks next time after failing, default true
@@ -258,15 +258,6 @@ const result = await taskSchedule.dispatch(1),
 ## utils methods
 there are some utils method as static members of `async-task-schedule`
 
-###  chunk<T>(arr: T[], size: number): T[][]
-split array to chunks with specified size
-
-```ts
-import TaskSchedule from 'async-task-schedule'
-
-const chunked = TaskSchedule.chunk([1,2,3,4,5,6,7], 3)
-// [[1,2,3], [4,5,6], [7]]
-```
 
 ### isEqual(a: unknown, b: unknown): boolean
 check whether the given values are equal (with deep comparison)
@@ -300,7 +291,7 @@ const fetchSchedule = new TaskSchedule({
   },
   // 0 for forever
   // set a minimum number 1 can disable cache after 1 millisecond
-  invalidAfter([cfg, result]) {
+  invalidAfter(cfg, result) {
     // cache get request for 3s
     if (!cfg.options || !cfg.options.method || !cfg.options.method.toLowerCase() === 'get') {
       // cache sys static config forever
@@ -328,6 +319,7 @@ with those codes above:
 suppose we have a method `getUsers` defined as follows:
 
 ```ts
+// support max 5 users at a time
 getUsers(userIds: string[]) => Promise<[{code: string, message: string, id?: string, name?: string, email?: string}]>
 ``` 
 
@@ -341,16 +333,19 @@ async function batchGetUsers(userIds: string[]): Promise<Array<[string, {id: str
 }
 
 const getUserSchedule = new TaskSchedule({
+  maxBatchCount: 5,
   batchDoTasks: batchGetUsers,
   // cache user info forever
   invalidAfter: 0,
 })
 
 const result = await Promise.all([
-  getUserSchedule.dispatch(['user1', 'user2']),
+  getUserSchedule.dispatch(['user1', 'user2', 'user3', 'user4', 'user5', 'user6']),
   getUserSchedule.dispatch(['user3', 'user2'])
+  getUserSchedule.dispatch(['user6', 'user7', 'user8', 'user9', 'user10'])
+  getUserSchedule.dispatch(['user2', 'user6', 'user9'])
 ])
-// only one request will be sent via getUsers with userIds ['user1', 'user2', 'user3']
+// only 2 requests will be sent via getUsers with userIds ['user1', 'user2', 'user3', 'user4', 'user5'] and ['user6', 'user7', 'user8', 'user9', 'user10']
 
 // request combine won't works when using await separately
 const result1 = await getUserSchedule.dispatch(['user1', 'user2'])

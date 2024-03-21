@@ -56,6 +56,7 @@ describe('async-task-schedule', () => {
         at.dispatch([5, 1, 7]),
         at.dispatch([7, 3, 21]),
       ])
+      // @ts-ignore
       expect(result[2][0] > 0).toEqual(true)
       try {
         const result = await at.dispatch(21)
@@ -93,11 +94,28 @@ describe('async-task-schedule', () => {
   })
 
   describe('taskExecStrategy', () => {
-    it('serial', async () => {
+    it('serial with batch', async () => {
       const at = new AsyncTask({
         // @ts-ignore
         batchDoTasks: async (names: number[]) => {
           return names.map((n) => n % 2 ? (`${n}-result`) : new Error('not support'))
+        },
+        taskExecStrategy: 'serial',
+        maxBatchCount: 2,
+      })
+
+      const result = await at.dispatch([1, 2, 3])
+      const respFor2 = result[1]
+      expect(respFor2).toBeDefined()
+      expect(respFor2!).toBeInstanceOf(Error)
+      expect(result[0]).toContain('-result')
+    })
+
+    it('serial with doTask', async () => {
+      const at = new AsyncTask({
+        
+        doTask: async (n: number) => {
+          return  n % 2 ? (`${n}-result`) : new Error('not support')
         },
         taskExecStrategy: 'serial',
         maxBatchCount: 2,
@@ -172,8 +190,8 @@ describe('async-task-schedule', () => {
       expect(r1.length).toEqual(6)
       const duration = (t2 - t1)
       // TODO: not precise
-      expect( duration > waitTime * 2).toEqual(true)
-      expect( duration < waitTime * 2 + delayTime).toEqual(true)
+      expect( duration > waitTime * 6).toEqual(true)
+      expect( duration < waitTime * 6 + delayTime + 10).toEqual(true)
     })
 
   })
@@ -280,12 +298,13 @@ describe('async-task-schedule', () => {
     it('custom validity', async() => {
       const callCount: Record<number, number> = {} 
       const at = new AsyncTask({
-        doTask(n: number) {
-          callCount[n] = callCount[n] ? callCount[n] + 1 : 1
+        async doTask(n: number) {
+          await delay(10)
+          callCount[n] = (callCount[n] || 0 ) + 1
           return n * n
         },
         // cache only n < 2
-        invalidAfter: ([n, r]) => {
+        invalidAfter: (n, r) => {
           if (n < 2) return 0
           return 1
         },
@@ -295,8 +314,11 @@ describe('async-task-schedule', () => {
       await delay(20)
       await at.dispatch(1)
       await at.dispatch([1, 2,3,4,5])
+      await delay(20)
       await at.dispatch([1, 2,9,4,5])
+      await delay(20)
       await at.dispatch(1)
+      
       // @ts-ignore
       expect(at.doneTaskMap.length).toEqual(1)
       expect(callCount[1]).toEqual(1)

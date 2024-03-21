@@ -19,30 +19,6 @@ describe('async-task static methods', () => {
     })
   })
 
-  describe('chunk', () => {
-    it('chunk with empty array', () => {
-      const arr: number[] = []
-      expect(AsyncTask.chunk(arr, 10).length).toEqual(0)
-    })
-
-    it('chunk array with small size ', () => {
-      const arr: number[] = Array(20).fill(1)
-      const size = 6
-      const result = AsyncTask.chunk(arr, size)
-      expect(result.length)
-        .toEqual(Math.ceil(arr.length / size))
-      expect(result.pop()?.length).toEqual(arr.length % size)
-    })
-
-    it('chunk array with big size ', () => {
-      const arr: number[] = Array(20).fill(1)
-      const size = 21
-      const result = AsyncTask.chunk(arr, size)
-      expect(result.length)
-        .toEqual(1)
-      expect(result[0].length).toEqual(arr.length)
-    })
-  })
 
   describe('runTaskExecutor', () => {
     it('runTaskExecutor with sync function, no parameters', async () => {

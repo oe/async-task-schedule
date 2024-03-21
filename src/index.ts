@@ -9,7 +9,12 @@ export class AsyncTask<Task, Result> {
    * 
    * batchDoTasks should receive multi tasks, and return result or error in order
    */
-  private batchDoTasks: (tasks: Task[]) => Promise<Array<Result | Error>> | Array<Result | Error>
+  private batchDoTasks?: (tasks: Task[]) => Promise<Array<Result | Error>> | Array<Result | Error>
+  
+  /**
+   * do single task
+   */
+  private doTask?: (task: Task) => Result | Error | Promise<Result | Error>
 
   /**
    * check whether two tasks are equal
@@ -50,13 +55,16 @@ export class AsyncTask<Task, Result> {
 
   /**
    * validity(caching duration) of the result(in ms), default unlimited
-   *    undefined or 0 for unlimited
-   *    function to specified specified each task's validity
-   *  default to 1s
+   *    - undefined or 0 for unlimited
+   *    - function to specified each task's validity
+   *       - function receive (task, result) as parameters
+   *       - return a number(ms) as the validity of the result
+   *  
+   * default to 1s
    * 
    * cache is lazy cleaned after invalid
    */
-  private invalidAfter?: number | ((cached: readonly [Task, Result | Error]) => number)
+  private invalidAfter?: number | ((task: Task, result: Result | Error) => number)
 
   /**
    * retry failed tasks next time after failing, default true
@@ -67,11 +75,6 @@ export class AsyncTask<Task, Result> {
    * tasks ready to be executed
    */
   private pendingTasks: Task[]
-
-  /**
-   * tasks executing in progress
-   */
-  private doingTasks: Task[]
 
   /**
    * original tasks request in queue waiting to resolve
@@ -132,13 +135,13 @@ export class AsyncTask<Task, Result> {
      * 
      * *cache is lazy cleaned after invalid*
      */
-    invalidAfter?: number | ((cached: readonly [Task, Result | Error]) => number)
+    invalidAfter?: number | ((task: Task, result: Result | Error) => number)
     /**
      * retry failed tasks next time after failing, default true
      */
     retryWhenFailed?: boolean
     /**
-     * task waiting stragy, default to debounce
+     * task waiting strategy, default to debounce
      *  throttle: tasks will combined and dispatch every `maxWaitingGap`
      *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
      */
@@ -150,7 +153,6 @@ export class AsyncTask<Task, Result> {
   }) {
     const userOptions = { ...AsyncTask.defaultOptions, ...options }
     this.pendingTasks = []
-    this.doingTasks = []
     this.doneTaskMap = []
     this.taskQueue = []
     this.isSameTask = userOptions.isSameTask
@@ -161,12 +163,17 @@ export class AsyncTask<Task, Result> {
     if (!userOptions.batchDoTasks && !userOptions.doTask) {
       throw new Error('one of batchDoTasks / doTask must be specified')
     }
-    this.batchDoTasks = userOptions.batchDoTasks || AsyncTask.wrapDoTask(userOptions.doTask!)
+    this.doTask = userOptions.doTask
+    this.batchDoTasks = userOptions.batchDoTasks
 
     this.taskExecStrategy = userOptions.taskExecStrategy
+    if (this.taskExecStrategy === 'serial') {
+      this.maxBatchCount = 1
+    }
+
     this.retryWhenFailed = userOptions.retryWhenFailed
     this.invalidAfter = userOptions.invalidAfter
-    this.tryTodDoTasks = this.tryTodDoTasks.bind(this)
+    this.runTasks = this.runTasks.bind(this)
     this.dispatch = this.dispatch.bind(this)
   }
   /**
@@ -186,7 +193,7 @@ export class AsyncTask<Task, Result> {
       }
       return Promise.resolve(result)
     } catch (error) {
-      // not found
+      // note all tasks are cached, just created new tasks
     }
     return new Promise((resolve, reject) => {
       this.createTasks(tasks, resolve, reject)
@@ -195,7 +202,8 @@ export class AsyncTask<Task, Result> {
 
   /**
    * clean cached task result
-   *  this may not exec immediately, it will take effect after all tasks are done
+   *  - this may not exec immediately
+   *  - it will take effect after all tasks are done
    */
   cleanCache() {
     this.needCleanCache = true
@@ -207,7 +215,7 @@ export class AsyncTask<Task, Result> {
    */
   private cleanCacheIfNeeded() {
     if (!this.needCleanCache) return
-    if (this.pendingTasks.length || this.doingTasks.length || this.taskQueue.length) return
+    if (this.pendingTasks.length || this.taskQueue.length) return
     this.needCleanCache = false
     this.doneTaskMap = []
   }
@@ -233,10 +241,6 @@ export class AsyncTask<Task, Result> {
     if (this.pendingTasks.length) {
       myTasks = myTasks.filter((f) => !this.hasTask(this.pendingTasks, f))
     }
-    // remove doing tasks
-    if (myTasks.length && this.doingTasks.length) {
-      myTasks = myTasks.filter((f) => !this.hasTask(this.doingTasks, f))
-    }
     // remove done tasks
     if (myTasks.length) {
       myTasks = myTasks.filter((f) => !this.getTaskResult(f))
@@ -254,61 +258,56 @@ export class AsyncTask<Task, Result> {
     } else {
       timeout = this.maxWaitingGap
     }
-    this.timeoutId = setTimeout(this.tryTodDoTasks, timeout)
+    this.timeoutId = setTimeout(this.runTasks, timeout)
   }
 
-  /**
-   * time out when exec task in serial
-   */
-  private delayTimeoutId?: any
-  
-  /**
-   * try to do tasks
-   *  if taskExecStrategy is parallel then do it immediately,
-   *  otherwise waiting util doingTasks is empty
-   */
-  private tryTodDoTasks() {
-    // should exec in serial, and still has executing tasks
-    if (this.taskExecStrategy === 'serial' && this.doingTasks.length) {
-      clearTimeout(this.delayTimeoutId)
-      // wait a moment then check again
-      this.delayTimeoutId = setTimeout(this.tryTodDoTasks, 50)
+  // whether task is running
+  isTaskRunning = false
+
+  private runTasks() {
+    if (this.isTaskRunning || !this.pendingTasks.length) return
+    this.isTaskRunning = true
+    if (this.batchDoTasks) {
+      this.runTaskWithBatchDoTasks()
     } else {
-      this.doTasks()
+      this.runTasksWithDoTask()
     }
   }
 
-  private async doTasks() {
-    const tasks = this.pendingTasks.splice(0)
-    this.doingTasks = this.doingTasks.concat(tasks)
-    const tasksGroup = this.maxBatchCount ? AsyncTask.chunk(tasks, this.maxBatchCount) : [tasks]
-    if (this.taskExecStrategy === 'serial') {
-      // eslint-disable-next-line no-plusplus
-      for (let index = 0; index < tasksGroup.length; ++index) {
-        const taskList = tasksGroup[index]
-        try {
-          // eslint-disable-next-line no-await-in-loop
-          const result = await this.batchDoTasks(taskList)
-          this.updateResultMap(taskList, result)
-        } catch (error) {
-          this.updateResultMap(taskList, AsyncTask.wrapError(error))
-        }
-        this.checkAllTasks()
-        this.removeDoneTasks(taskList)
+  private async runTasksWithDoTask() {
+    const taskItems = this.pendingTasks.splice(0, this.maxBatchCount || this.pendingTasks.length)
+    taskItems.forEach(async (task) => {
+      try {
+        const result = await this.doTask!(task)
+        this.updateResultMap([task], [result])
+      } catch (error) {
+        this.updateResultMap([task], AsyncTask.wrapError(error))
       }
-    } else {
-      const allResponse = await Promise.all(
-        tasksGroup
-          .map((taskList) => AsyncTask.runTaskExecutor(this.batchDoTasks, taskList)),
-      )
-      allResponse.forEach((result, index) => {
-        this.updateResultMap(tasksGroup[index],
-          result.status === 'rejected' ? AsyncTask.wrapError(result.reason) : result.value)
-      })
       this.checkAllTasks()
-      this.removeDoneTasks(tasks)
+      if (this.pendingTasks.length) {
+        this.runTasksWithDoTask()
+      } else {
+        this.cleanupTasks()
+        this.isTaskRunning = false
+      }
+    })
+  }
+
+  private async runTaskWithBatchDoTasks() {
+    const taskItems = this.pendingTasks.splice(0, this.maxBatchCount || this.pendingTasks.length)
+    try {
+      const result = await this.batchDoTasks!(taskItems)
+      this.updateResultMap(taskItems, result)
+    } catch (error) {
+      this.updateResultMap(taskItems, AsyncTask.wrapError(error))
     }
-    this.cleanupTasks()
+    this.checkAllTasks()
+    if (this.pendingTasks.length) {
+      this.runTaskWithBatchDoTasks()
+    } else {
+      this.cleanupTasks()
+      this.isTaskRunning = false
+    }
   }
 
   /**
@@ -346,13 +345,13 @@ export class AsyncTask<Task, Result> {
     if (Array.isArray(tasks)) {
       const result: Array<Result | Error> = []
       return tasks.reduce((acc, task) => {
-        const val = this.getTaskResult(task) || false
+        const val = this.getTaskResult(task)
         if (!val) throw new Error('not found')
         acc.push(val[1])
         return acc
       }, result)
     }
-    const val = this.getTaskResult(tasks) || false
+    const val = this.getTaskResult(tasks)
     if (!val) throw new Error('not found')
     return val[1]
   }
@@ -368,9 +367,6 @@ export class AsyncTask<Task, Result> {
     return list.some((item) => this.isSameTask(task, item))
   }
 
-  private removeDoneTasks(tasks: Task[]) {
-    this.doingTasks = this.doingTasks.filter((f) => !this.hasTask(tasks, f))
-  }
 
   private updateResultMap(tasks: Task[], result: Array<Result | Error> | Error) {
     const now = Date.now()
@@ -381,7 +377,7 @@ export class AsyncTask<Task, Result> {
       const defaultValue = new Error('not found')
       doneArray = tasks.map((t, idx) => {
         const taskResult = result.length > idx ? result[idx] : defaultValue
-        return { task: t, value: taskResult ? taskResult : defaultValue, time: now }
+        return { task: t, value: taskResult, time: now }
       })
     }
     this.doneTaskMap = this.doneTaskMap.concat(doneArray)
@@ -389,13 +385,15 @@ export class AsyncTask<Task, Result> {
 
   /**
    * clean tasks
-   *  try to clean cache if needed
-   *  try to remove failed result, remove outdated cache if needed
+   *  - try to clean cache if needed
+   *  - try to remove failed result, remove outdated cache if needed
    */
   private cleanupTasks() {
     this.cleanCacheIfNeeded()
     // has unresolved tasks, unable to cleanup task
     if (this.taskQueue.length) return
+    // nothing to cleanup
+    if (!this.doneTaskMap.length) return
     // no need to remove outdated or failed tasks
     if (!this.invalidAfter && !this.retryWhenFailed) return
     const now = Date.now()
@@ -404,9 +402,9 @@ export class AsyncTask<Task, Result> {
         return false
       }
       if (this.invalidAfter) {
-        const time = typeof this.invalidAfter === 'function' ? this.invalidAfter([item.task, item.value]) : this.invalidAfter
-        if (!time) return true
-        return now - item.time <= this.invalidAfter!
+        const invalidAfter = typeof this.invalidAfter === 'function' ? this.invalidAfter(item.task, item.value) : this.invalidAfter
+        if (!invalidAfter) return true
+        return now - item.time <= invalidAfter
       }
       return true
     })
@@ -425,20 +423,6 @@ export class AsyncTask<Task, Result> {
   }
 
   /**
-   * split array to chunks with specified size
-   * @param arr array of fileIds
-   * @param size chunk size
-   * @returns 2 dimensional array
-   */
-  static chunk<T>(arr: T[], size: number): T[][] {
-    const result: T[][] = []
-    for (let i = 0; i < arr.length; i += size) {
-      result.push(arr.slice(i, i + size))
-    }
-    return result
-  }
-
-  /**
    * simulate Promise.allSettled result item for better compatibility
    *    (due to Promise.allSettled only support newer platforms)
    * @param promise 
@@ -453,20 +437,6 @@ export class AsyncTask<Task, Result> {
     }
   }
 
-  /**
-   * wrap do task to a batch version
-   * @param doTask action to do single task
-   * @returns batch version to do multi tasks
-   */
-  static wrapDoTask<T, R>(doTask: (t: T) => Promise<R> | R): (tasks: T[]) => Promise<Array< R | Error>> {
-    return async function (tasks: T[]): Promise<Array<R | Error>> {
-      const results = await Promise.all(tasks.map(t => AsyncTask.runTaskExecutor(doTask, t)))
-      return tasks.map((t, idx) => {
-        const result = results[idx]
-        return result.status === 'fulfilled' ? result.value : result.reason
-      })
-    }
-  }
   /**
    * check whether the given values are equal (with deep comparison)
    */
