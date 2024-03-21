@@ -1,6 +1,6 @@
 {
   "name": "async-task-schedule",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "schedule async tasks",
   "main": "dist/index.js",
   "module": "dist/index.es.js",
