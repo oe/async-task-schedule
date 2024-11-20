@@ -1,6 +1,52 @@
 export type ITaskExecStrategy = 'parallel' | 'serial'
 export type ITaskWaitingStrategy = 'throttle' | 'debounce'
-
+export interface IAsyncTaskOptions<Task, Result> {
+  /**
+   * max batch tasks count when dispatching
+   */
+  maxBatchCount?: number,
+  /**
+   * action to do batch tasks
+   *  one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
+   */
+  batchDoTasks?: (tasks: Task[]) => Promise<Array<Result | Error>> | Array<Result | Error>,
+  /**
+   * action to do single task
+   *  one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
+   */
+  doTask?: (task: Task) => Promise<Result> | Result
+  /**
+   * do batch tasks executing strategy, default to parallel
+   */
+  taskExecStrategy?: ITaskExecStrategy
+  /**
+   * max waiting time(in milliseconds) for combined tasks, default to 50
+   */
+  maxWaitingGap?: number
+  /**
+   * task result caching duration(in milliseconds), default to 1000ms (1s)
+   * >`undefined` or `0` for unlimited  
+   * >set to minimum value `1` to disable caching  
+   * >`function` to specified specified each task's validity
+   * 
+   * *cache is lazy cleaned after invalid*
+   */
+  invalidAfter?: number | ((task: Task, result: Result | Error) => number)
+  /**
+   * retry failed tasks next time after failing, default true
+   */
+  retryWhenFailed?: boolean
+  /**
+   * task waiting strategy, default to debounce
+   *  throttle: tasks will combined and dispatch every `maxWaitingGap`
+   *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
+   */
+  taskWaitingStrategy?: ITaskWaitingStrategy
+  /**
+   * check whether two tasks are identified the same
+   */
+  isSameTask?: (a: Task, b: Task) => boolean
+}
 export default class AsyncTask<Task, Result> {
   /**
    * action to do batch tasks
@@ -104,53 +150,7 @@ export default class AsyncTask<Task, Result> {
     retryWhenFailed: true,
   }
 
-  constructor(options: {
-    /**
-     * max batch tasks count when dispatching
-     */
-    maxBatchCount?: number,
-    /**
-     * action to do batch tasks
-     *  one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
-     */
-    batchDoTasks?: (tasks: Task[]) => Promise<Array<Result | Error>> | Array<Result | Error>,
-    /**
-     * action to do single task
-     *  one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
-     */
-    doTask?: (task: Task) => Promise<Result> | Result
-    /**
-     * do batch tasks executing strategy, default to parallel
-     */
-    taskExecStrategy?: ITaskExecStrategy
-    /**
-     * max waiting time(in milliseconds) for combined tasks, default to 50
-     */
-    maxWaitingGap?: number
-    /**
-     * task result caching duration(in milliseconds), default to 1000ms (1s)
-     * >`undefined` or `0` for unlimited  
-     * >set to minimum value `1` to disable caching  
-     * >`function` to specified specified each task's validity
-     * 
-     * *cache is lazy cleaned after invalid*
-     */
-    invalidAfter?: number | ((task: Task, result: Result | Error) => number)
-    /**
-     * retry failed tasks next time after failing, default true
-     */
-    retryWhenFailed?: boolean
-    /**
-     * task waiting strategy, default to debounce
-     *  throttle: tasks will combined and dispatch every `maxWaitingGap`
-     *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
-     */
-    taskWaitingStrategy?: ITaskWaitingStrategy
-    /**
-     * check whether two tasks are identified the same
-     */
-    isSameTask?: (a: Task, b: Task) => boolean
-  }) {
+  constructor(options: IAsyncTaskOptions<Task, Result>) {
     const userOptions = { ...AsyncTask.defaultOptions, ...options }
     this.pendingTasks = []
     this.doneTaskMap = []
