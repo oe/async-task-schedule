@@ -1,9 +1,9 @@
 {
   "compilerOptions": {
     "rootDir": "./src",
-    "outDir": "./dist",
-    "module": "commonjs",
-    "target": "ES2015",
+    "outDir": "dist",
+    "module": "ESNext",
+    "target": "ESNext",
     "lib": [
       "ES2015",
       "DOM"
@@ -14,8 +14,11 @@
     "declaration": true,
     "noImplicitAny": true,
     "esModuleInterop": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "moduleResolution": "Node",
+    "sourceMap": true
   },
+  "include": ["src", "test"],
   "exclude": [
     "dist",
     "test",

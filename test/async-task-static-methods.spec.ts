@@ -1,4 +1,5 @@
 import AsyncTask from '../src'
+import { describe, it, expect } from 'vitest'
 
 describe('async-task static methods', () => {
   describe('wrapError', () => {
@@ -68,10 +69,6 @@ describe('async-task static methods', () => {
       // @ts-ignore
       expect(result.reason).toBeInstanceOf(Error)
     })
-  })
-
-  describe('wrapDoTask', () => {
-
   })
 
   describe('isEqual', () => {

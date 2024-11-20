@@ -1,7 +1,7 @@
 export type ITaskExecStrategy = 'parallel' | 'serial'
 export type ITaskWaitingStrategy = 'throttle' | 'debounce'
 
-export class AsyncTask<Task, Result> {
+export default class AsyncTask<Task, Result> {
   /**
    * action to do batch tasks
    *  Task: single task request info
@@ -188,9 +188,6 @@ export class AsyncTask<Task, Result> {
     this.cleanupTasks()
     try {
       const result = this.tryGetTaskResult(tasks)
-      if (result instanceof Error) {
-        return Promise.reject(result)
-      }
       return Promise.resolve(result)
     } catch (error) {
       // note all tasks are cached, just created new tasks
@@ -319,11 +316,7 @@ export class AsyncTask<Task, Result> {
         const result = this.tryGetTaskResult(taskItem.tasks)
         // eslint-disable-next-line no-param-reassign
         taskItem.isDone = true
-        if (result instanceof Error) {
-          taskItem.reject(result)
-        } else {
-          taskItem.resolve(result)
-        }
+        taskItem.resolve(result)
       } catch (error) {
         // not found
       }
@@ -462,7 +455,3 @@ export class AsyncTask<Task, Result> {
     return true
   }
 }
-
-// makes parcel correctly bundle es6 and commonjs
-//@ts-ignore
-export = AsyncTask

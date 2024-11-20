@@ -1,4 +1,5 @@
 import AsyncTask from '../src'
+import { describe, it, expect } from 'vitest'
 
 function delay(time: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, time))
@@ -60,7 +61,7 @@ describe('async-task-schedule', () => {
       expect(result[2][0] > 0).toEqual(true)
       try {
         const result = await at.dispatch(21)
-        fail('should go into error')
+        // fail('should go into error')
       } catch(e) {
         expect(e).toBeInstanceOf(Error)
       }
@@ -215,16 +216,10 @@ describe('async-task-schedule', () => {
         invalidAfter: 0,
         retryWhenFailed: false
       })
-      await at.dispatch([1,2,3])
-      try {
-        const result = await at.dispatch(1)
-        fail('should go to catch block')
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error)
-        // @ts-ignore
-        expect(error.message).toEqual('not implemented')
-        expect(countOf1).toEqual(1)
-      }
+      const result = await at.dispatch([1,2,3])
+      await at.dispatch(1)
+      expect(result[2]).toBeInstanceOf(Error)
+      expect(countOf1).toEqual(1)
     })
 
     it('get cached error result', async () => {

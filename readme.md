@@ -118,7 +118,7 @@ interface ITaskScheduleOptions<Task, Result> {
   taskExecStrategy: 'parallel' | 'serial'
 
   /**
-   * task waiting stragy, default to debounce
+   * task waiting strategy, default to debounce
    *  throttle: tasks will combined and dispatch every `maxWaitingGap`
    *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
    */
