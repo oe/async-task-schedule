@@ -61,12 +61,7 @@ describe('async-task-schedule', () => {
       ])
       // @ts-ignore
       expect(result[2][0] > 0).toEqual(true)
-      try {
-        const result = await at.dispatch(21)
-        // fail('should go into error')
-      } catch(e) {
-        expect(e).toBeInstanceOf(Error)
-      }
+      await expect(at.dispatch(21)).rejects.toThrow('jackpot bong! 21')
     })
   })
 
@@ -168,11 +163,7 @@ describe('async-task-schedule', () => {
 
   describe('miscs', () => {
     it('critical parameters missing', () => {
-      try {
-        new AsyncTask({})
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error)
-      }
+      expect(() => new AsyncTask({})).toThrow('one of batchDoTasks / doTask must be specified')
     })
 
     it('get cached error result', async () => {

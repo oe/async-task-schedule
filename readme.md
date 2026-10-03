@@ -101,6 +101,13 @@ interface ITaskScheduleOptions<Task, Result> {
   isSameTask?: (a: Task, b: Task) => boolean
 
   /**
+   * optional stable task identity, used for indexed deduplication and cache lookup
+   * same keys mean the same task; takes precedence over isSameTask
+   * return a string, number, or symbol
+   */
+  getTaskKey?: (task: Task) => string | number | symbol
+
+  /**
    * max task count for batchDoTasks, default unlimited
    *  undefined or 0 for unlimited; otherwise a positive integer
    */
@@ -367,3 +374,41 @@ const taskSchedule = new TaskSchedule({
 ```
 
 
+
+## Performance and testing
+
+For many tasks or large object inputs, supply a stable, inexpensive `getTaskKey`:
+
+```ts
+const users = new TaskSchedule({
+  doTask: async (task: { tenantId: string; userId: string }) => {
+    return fetch(`/tenants/${task.tenantId}/users/${task.userId}`)
+  },
+  getTaskKey: task => JSON.stringify([task.tenantId, task.userId]),
+})
+```
+
+Keys take precedence over `isSameTask`. Equal keys share execution and cached results;
+the first task's parameters are used. Include every input that affects the result
+(e.g. tenant, user, permissions, or query options). Keys must be pure and stable
+throughout execution and caching; do not mutate task identity after dispatch.
+A symbol must be reused, rather than created anew on each call. Keys use `Map` equality:
+`1` differs from `'1'`, `NaN` equals `NaN`, and `0` equals `-0`.
+Without `getTaskKey`, deep comparison or your custom `isSameTask` continues to apply.
+
+The indexed path avoids linear searches for pending, running, and cached tasks.
+Numeric TTLs skip cache scans until the next expiration; function-based TTLs are
+still evaluated at cleanup so callbacks retain their behavior. Cache cleanup is
+lazy and deferred during active work, as before.
+
+Run `yarn test` for behavior tests and coverage, `yarn typecheck` for source and
+test/type assertions, and `yarn benchmark` for a reproducible deep-comparison vs.
+keyed benchmark. The benchmark verifies result equality and reports median cold
+and hot-cache timings plus comparison counts. Timings depend on the machine;
+unit tests assert bounded key/comparison work rather than elapsed-time targets.
+
+Further optimization opportunities include notifying only requests affected by a
+completed task (the current queue is scanned on every completion), configurable
+concurrency/backpressure, and bounded cache size. `maxBatchCount` is the batch size,
+not a global concurrency limit in parallel mode. Unlimited caching can retain
+results indefinitely; use a TTL or `cleanCache()` when appropriate.

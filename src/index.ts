@@ -1,3 +1,4 @@
+export type ITaskKey = string | number | symbol
 export type ITaskExecStrategy = 'parallel' | 'serial'
 export type ITaskWaitingStrategy = 'throttle' | 'debounce'
 export interface IAsyncTaskOptions<Task, Result> {
@@ -46,6 +47,11 @@ export interface IAsyncTaskOptions<Task, Result> {
    * check whether two tasks are identified the same
    */
   isSameTask?: (a: Task, b: Task) => boolean
+  /**
+   * Optional stable task identity for indexed deduplication and cached lookups.
+   * Equal keys identify the same task; takes precedence over isSameTask.
+   */
+  getTaskKey?: (task: Task) => ITaskKey
 }
 export default class AsyncTask<Task, Result> {
   /**
@@ -68,6 +74,10 @@ export default class AsyncTask<Task, Result> {
    *  default:  AsyncTask.isEqual (deep comparison)
    */
   private isSameTask: (a: Task, b: Task) => boolean
+  private getTaskKey?: (task: Task) => ITaskKey
+  private pendingKeys = new Set<ITaskKey>()
+  private runningKeys = new Set<ITaskKey>()
+  private resultByKey = new Map<ITaskKey, { task: Task, value: Result | Error, time: number }>()
 
   /**
    * max task count for batchDoTasks, default unlimited
@@ -128,7 +138,7 @@ export default class AsyncTask<Task, Result> {
    *  empty if all task are done
    */
   private taskQueue: Array<{
-    tasks: Task[]|Task, resolve: Function, reject: Function, isDone?: boolean }>
+    tasks: Task[]|Task, resolve: Function, reject: Function }>
   
   /**
    * cached task result
@@ -139,6 +149,7 @@ export default class AsyncTask<Task, Result> {
    * whether need to clean cache result, aka clean doneTaskMap
    */
   private needCleanCache?: boolean
+  private nextCacheCleanup = Infinity
   /**
    * default task options
    */
@@ -157,6 +168,7 @@ export default class AsyncTask<Task, Result> {
     this.doneTaskMap = []
     this.taskQueue = []
     this.isSameTask = userOptions.isSameTask
+    this.getTaskKey = userOptions.getTaskKey
     this.maxBatchCount = userOptions.maxBatchCount
     this.maxWaitingGap = userOptions.maxWaitingGap
 
@@ -188,12 +200,10 @@ export default class AsyncTask<Task, Result> {
   async dispatch<T extends readonly Task[] | []>(tasks: T): Promise<{ [k in keyof T]: Result | Error } >
   async dispatch(tasks: Task[] | Task) {
     this.cleanupTasks()
-    try {
-      const result = this.tryGetTaskResult(tasks)
-      if (!Array.isArray(tasks) && result instanceof Error) return Promise.reject(result)
-      return result
-    } catch (error) {
-      // note all tasks are cached, just created new tasks
+    const result = this.findTaskResults(tasks)
+    if (result) {
+      if (!Array.isArray(tasks) && result.value instanceof Error) throw result.value
+      return result.value
     }
     return new Promise((resolve, reject) => {
       this.createTasks(tasks, resolve, reject)
@@ -218,6 +228,8 @@ export default class AsyncTask<Task, Result> {
     if (this.isTaskRunning || this.pendingTasks.length || this.taskQueue.length) return
     this.needCleanCache = false
     this.doneTaskMap = []
+    this.resultByKey.clear()
+    this.nextCacheCleanup = Infinity
   }
 
   /** tasks combine waiting timeout */
@@ -233,21 +245,25 @@ export default class AsyncTask<Task, Result> {
    * @param reject promise reject function
    */
   private createTasks(tasks: Task | Task[], resolve: Function, reject: Function) {
+    const requested = Array.isArray(tasks) ? tasks : [tasks]
+    let myTasks: Task[]
+    if (this.getTaskKey) {
+      const seen = new Set<ITaskKey>()
+      myTasks = requested.filter((task) => {
+        const key = this.getTaskKey!(task)
+        if (seen.has(key) || this.pendingKeys.has(key) || this.runningKeys.has(key) || this.resultByKey.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      for (const task of myTasks) this.pendingKeys.add(this.getTaskKey(task))
+    } else {
+      myTasks = requested.filter((task, idx) => idx === requested.findIndex(t => this.isSameTask(t, task)))
+      myTasks = myTasks.filter((task) => !this.hasTask(this.pendingTasks, task)
+        && !this.hasTask(this.runningTasks, task) && !this.getTaskResult(task))
+    }
     this.taskQueue.push({ tasks, resolve, reject })
-    let myTasks = Array.isArray(tasks) ? tasks : [tasks]
-    // remove duplicated tasks in itself
-    myTasks = myTasks.filter((task, idx) => idx === myTasks.findIndex(t => this.isSameTask(t, task)))
-    // remove pending tasks
-    if (this.pendingTasks.length) {
-      myTasks = myTasks.filter((f) => !this.hasTask(this.pendingTasks, f))
-    }
-    myTasks = myTasks.filter((task) => !this.hasTask(this.runningTasks, task))
-    // remove done tasks
-    if (myTasks.length) {
-      myTasks = myTasks.filter((f) => !this.getTaskResult(f))
-    }
     if (!myTasks.length) return
-    this.pendingTasks = this.pendingTasks.concat(myTasks)
+    for (const task of myTasks) this.pendingTasks.push(task)
 
     clearTimeout(this.timeoutId)
     let timeout = 0
@@ -273,11 +289,11 @@ export default class AsyncTask<Task, Result> {
         if (this.taskExecStrategy === 'serial') {
           const count = this.maxBatchCount || (this.batchDoTasks ? this.pendingTasks.length : 1)
           const tasks = this.pendingTasks.splice(0, count)
-          this.runningTasks.push(...tasks)
+          this.markRunning(tasks)
           await this.executeTasks(tasks)
         } else {
           const tasks = this.pendingTasks.splice(0)
-          this.runningTasks.push(...tasks)
+          this.markRunning(tasks)
           const count = this.maxBatchCount || tasks.length
           const batches: Array<Promise<void>> = []
           for (let i = 0; i < tasks.length; i += count) {
@@ -312,62 +328,62 @@ export default class AsyncTask<Task, Result> {
     }
   }
 
+  private markRunning(tasks: Task[]) {
+    if (this.getTaskKey) {
+      for (const task of tasks) {
+        const key = this.getTaskKey(task)
+        this.pendingKeys.delete(key)
+        this.runningKeys.add(key)
+      }
+    } else {
+      for (const task of tasks) this.runningTasks.push(task)
+    }
+  }
+
   private finishTasks(tasks: Task[]) {
-    this.runningTasks = this.runningTasks.filter((task) => !this.hasTask(tasks, task))
-    if (!this.runningTasks.length && !this.pendingTasks.length) this.isTaskRunning = false
+    if (this.getTaskKey) {
+      for (const task of tasks) this.runningKeys.delete(this.getTaskKey(task))
+    } else {
+      this.runningTasks = this.runningTasks.filter((task) => !this.hasTask(tasks, task))
+    }
+    if (!this.runningTasks.length && !this.runningKeys.size && !this.pendingTasks.length) this.isTaskRunning = false
     this.checkAllTasks()
     this.cleanupTasks()
   }
 
-  /**
-   * check all tasks, try to resolve
-   */
+  /** Resolve requests whose results are all available. */
   private checkAllTasks() {
-    this.taskQueue.forEach((taskItem) => {
-      try {
-        const result = this.tryGetTaskResult(taskItem.tasks)
-        // eslint-disable-next-line no-param-reassign
-        taskItem.isDone = true
-        if (!Array.isArray(taskItem.tasks) && result instanceof Error) {
-          taskItem.reject(result)
-        } else {
-          taskItem.resolve(result)
-        }
-      } catch (error) {
-        // not found
+    this.taskQueue = this.taskQueue.filter((taskItem) => {
+      const result = this.findTaskResults(taskItem.tasks)
+      if (!result) return true
+      if (!Array.isArray(taskItem.tasks) && result.value instanceof Error) {
+        taskItem.reject(result.value)
+      } else {
+        taskItem.resolve(result.value)
       }
+      return false
     })
-    // clean done task
-    this.taskQueue = this.taskQueue.filter((task) => !task.isDone)
   }
 
-  /**
-   * get result list of given tasks
-   *  throw error when not found(to make it easier to distinct from falsy results)
-   * @param tasks tasks to check
-   * @param defaultResult default result if not found
-   */
-  private tryGetTaskResult(tasks: Task[] | Task): (Result | Error) | Array<Result | Error> {
-    if (Array.isArray(tasks) && !tasks.length) return []
-    // no cached data and no default result provided
-    if (!this.doneTaskMap.length) throw new Error('no done task')
-
+  /** A wrapper distinguishes a cached undefined result from a cache miss. */
+  private findTaskResults(tasks: Task[] | Task): { value: Result | Error | Array<Result | Error> } | undefined {
     if (Array.isArray(tasks)) {
-      const result: Array<Result | Error> = []
-      return tasks.reduce((acc, task) => {
-        const val = this.getTaskResult(task)
-        if (!val) throw new Error('not found')
-        acc.push(val[1])
-        return acc
-      }, result)
+      const values: Array<Result | Error> = []
+      for (const task of tasks) {
+        const result = this.getTaskResult(task)
+        if (!result) return undefined
+        values.push(result[1])
+      }
+      return { value: values }
     }
-    const val = this.getTaskResult(tasks)
-    if (!val) throw new Error('not found')
-    return val[1]
+    const result = this.getTaskResult(tasks)
+    return result ? { value: result[1] } : undefined
   }
 
   private getTaskResult(task: Task): [Task, Result | Error] | undefined {
-    const result = this.doneTaskMap.find((t) => this.isSameTask(task, t.task))
+    const result = this.getTaskKey
+      ? this.resultByKey.get(this.getTaskKey(task))
+      : this.doneTaskMap.find((t) => this.isSameTask(task, t.task))
     if (result) {
       return [result.task, result.value]
     }
@@ -380,17 +396,24 @@ export default class AsyncTask<Task, Result> {
 
   private updateResultMap(tasks: Task[], result: Array<Result | Error> | Error) {
     const now = Date.now()
-    let doneArray: any[] = []
+    let doneArray: Array<{ task: Task, value: Result | Error, time: number }> = []
     if (result instanceof Error) {
       doneArray = tasks.map((t) => ({ task: t, value: result, time: now }))
     } else {
-      const defaultValue = new Error('not found')
+      let defaultValue: Error | undefined
       doneArray = tasks.map((t, idx) => {
-        const taskResult = result.length > idx ? result[idx] : defaultValue
+        const taskResult = result.length > idx ? result[idx] : (defaultValue || (defaultValue = new Error('not found')))
         return { task: t, value: taskResult, time: now }
       })
     }
-    this.doneTaskMap = this.doneTaskMap.concat(doneArray)
+    for (const item of doneArray) {
+      this.doneTaskMap.push(item)
+      if (this.retryWhenFailed && item.value instanceof Error) this.nextCacheCleanup = 0
+      if (typeof this.invalidAfter === 'number' && this.invalidAfter) {
+        this.nextCacheCleanup = Math.min(this.nextCacheCleanup, Math.floor(now + this.invalidAfter) + 1)
+      }
+      if (this.getTaskKey) this.resultByKey.set(this.getTaskKey(item.task), item)
+    }
   }
 
   /**
@@ -407,6 +430,8 @@ export default class AsyncTask<Task, Result> {
     // no need to remove outdated or failed tasks
     if (!this.invalidAfter && !this.retryWhenFailed) return
     const now = Date.now()
+    if (typeof this.invalidAfter !== 'function' && now < this.nextCacheCleanup) return
+    this.nextCacheCleanup = Infinity
     this.doneTaskMap = this.doneTaskMap.filter((item) => {
       if (this.retryWhenFailed && item.value instanceof Error) {
         return false
@@ -414,10 +439,16 @@ export default class AsyncTask<Task, Result> {
       if (this.invalidAfter) {
         const invalidAfter = typeof this.invalidAfter === 'function' ? this.invalidAfter(item.task, item.value) : this.invalidAfter
         if (!invalidAfter) return true
-        return now - item.time <= invalidAfter
+        const valid = now - item.time <= invalidAfter
+        if (valid) this.nextCacheCleanup = Math.min(this.nextCacheCleanup, Math.floor(item.time + invalidAfter) + 1)
+        return valid
       }
       return true
     })
+    if (this.getTaskKey) {
+      this.resultByKey.clear()
+      for (const item of this.doneTaskMap) this.resultByKey.set(this.getTaskKey(item.task), item)
+    }
   }
 
   /**
