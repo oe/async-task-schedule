@@ -1,5 +1,7 @@
 import AsyncTask from '../src'
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
+
+afterEach(() => vi.useRealTimers())
 
 function delay(time: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, time))
@@ -59,12 +61,7 @@ describe('async-task-schedule', () => {
       ])
       // @ts-ignore
       expect(result[2][0] > 0).toEqual(true)
-      try {
-        const result = await at.dispatch(21)
-        // fail('should go into error')
-      } catch(e) {
-        expect(e).toBeInstanceOf(Error)
-      }
+      await expect(at.dispatch(21)).rejects.toThrow('jackpot bong! 21')
     })
   })
 
@@ -129,81 +126,44 @@ describe('async-task-schedule', () => {
       expect(result[0]).toContain('-result')
     })
 
-    it('serial waiting', async () => {
-      const waitTime = 100
-      const t1 = Date.now()
+    it('serial doTask runs one at a time by default', async () => {
+      let active = 0
+      let peak = 0
       const at = new AsyncTask({
-        // @ts-ignore
-        batchDoTasks: async (names: number[]) => {
-          await delay(waitTime)
-          return names.map((n) => n % 2 ? `${n}-result` : new Error(`not supported ${n}`)).filter(Boolean)
+        async doTask(n: number) {
+          peak = Math.max(peak, ++active)
+          await delay(1)
+          --active
+          return n
         },
-        taskExecStrategy: 'serial',
-        maxBatchCount: 2,
+        taskExecStrategy: 'serial', maxWaitingGap: 0,
       })
-      const result = Promise.all([
-        at.dispatch([1, 2, 3]),
-        at.dispatch([3, 4, 5]),
-      ])
-      const result2 = new Promise((resolve) => {
-        setTimeout(() => {
-          resolve(at.dispatch([2, 10, 88, 23, 21, 13]))
-        }, 60);
-      })
-      const r = await result
-      const r1 = await result2
-      const t2 = Date.now()
-      // @ts-ignore
-      expect(r1.length).toEqual(6)
-      // make sure all of them exec in serial
-      expect((t2 - t1) > waitTime * 6).toEqual(true)
+      await expect(at.dispatch([1, 2, 3])).resolves.toEqual([1, 2, 3])
+      expect(peak).toBe(1)
     })
   })
 
   describe('taskWaitingStrategy', () => {
-    it('throttle waiting', async () => {
-      const waitTime = 100
-      const t1 = Date.now()
-      const at = new AsyncTask({
-        // @ts-ignore
-        batchDoTasks: async (names: number[]) => {
-          await delay(waitTime)
-          return names.map((n) => n % 2 ? `${n}-result` : new Error('not supported'))
-        },
-        taskWaitingStrategy: 'throttle',
-        maxBatchCount: 2,
-      })
-      const result = Promise.all([
-        at.dispatch([1, 2, 3]),
-        at.dispatch([3, 4, 5]),
-      ])
-
-      const delayTime = 60
-      const result2 = new Promise((resolve) => {
-        setTimeout(() => {
-          resolve(at.dispatch([2, 10, 88, 23, 21, 13]))
-        }, delayTime);
-      })
-      const r = await result
-      const r1 = await result2
-      const t2 = Date.now()
-      // @ts-ignore
-      expect(r1.length).toEqual(6)
-      const duration = (t2 - t1)
-      // TODO: not precise
-      expect( duration > waitTime * 6).toEqual(true)
-      expect( duration < waitTime * 6 + delayTime + 10).toEqual(true)
+    it.each(['throttle', 'debounce'] as const)('%s combines requests with the correct waiting window', async (taskWaitingStrategy) => {
+      vi.useFakeTimers()
+      const batchDoTasks = vi.fn((tasks: number[]) => tasks)
+      const at = new AsyncTask({ batchDoTasks, taskWaitingStrategy, maxWaitingGap: 50 })
+      const first = at.dispatch(1)
+      await vi.advanceTimersByTimeAsync(30)
+      const second = at.dispatch(2)
+      await vi.advanceTimersByTimeAsync(20)
+      expect(batchDoTasks).toHaveBeenCalledTimes(taskWaitingStrategy === 'throttle' ? 1 : 0)
+      await vi.advanceTimersByTimeAsync(30)
+      await expect(first).resolves.toBe(1)
+      await expect(second).resolves.toBe(2)
+      expect(batchDoTasks).toHaveBeenCalledTimes(1)
+      expect(batchDoTasks).toHaveBeenCalledWith([1, 2])
     })
-
   })
 
   describe('miscs', () => {
     it('critical parameters missing', () => {
-      try {
-        new AsyncTask({})
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error)
-      }
+      expect(() => new AsyncTask({})).toThrow('one of batchDoTasks / doTask must be specified')
     })
 
     it('get cached error result', async () => {
@@ -217,27 +177,31 @@ describe('async-task-schedule', () => {
         retryWhenFailed: false
       })
       const result = await at.dispatch([1,2,3])
-      await at.dispatch(1)
+      await expect(at.dispatch(1)).rejects.toThrow('not implemented')
       expect(result[2]).toBeInstanceOf(Error)
       expect(countOf1).toEqual(1)
     })
 
-    it('get cached error result', async () => {
+    it('clears cached successes', async () => {
+      let calls = 0
       const at = new AsyncTask({
         doTask(n: number) {
+          ++calls
           return n * n
         },
         retryWhenFailed: false
       })
       await at.dispatch([1,2,3])
       at.cleanCache()
-      // @ts-ignore
-      expect(at.doneTaskMap.length).toBe(0)
+      await expect(at.dispatch(1)).resolves.toBe(1)
+      expect(calls).toBe(4)
     })
 
     it('delay clean cache', async () => {
+      let calls = 0
       const at = new AsyncTask({
         doTask(n: number) {
+          ++calls
           return n * n
         },
         retryWhenFailed: false
@@ -247,8 +211,9 @@ describe('async-task-schedule', () => {
       const result2 = at.dispatch([1,2,3, 7, 0, 1, 10])
       await result1
       await result2
-      // @ts-ignore
-      expect(at.doneTaskMap.length).toBe(0)
+      const previousCalls = calls
+      await expect(at.dispatch([1, 2, 3])).resolves.toEqual([1, 4, 9])
+      expect(calls).toBe(previousCalls + 3)
     })
 
   })
@@ -267,8 +232,6 @@ describe('async-task-schedule', () => {
       await at.dispatch([1,2,3,4])
       await delay(20)
       await at.dispatch(1)
-      // @ts-ignore
-      expect(at.doneTaskMap.length).toEqual(1)
       expect(task1Count).toEqual(2)
     })
 
@@ -285,8 +248,6 @@ describe('async-task-schedule', () => {
       await at.dispatch([1,2,3,4])
       await delay(20)
       await at.dispatch(1)
-      // @ts-ignore
-      expect(at.doneTaskMap.length).toEqual(4)
       expect(task1Count).toEqual(1)
     })
 
@@ -314,8 +275,6 @@ describe('async-task-schedule', () => {
       await delay(20)
       await at.dispatch(1)
       
-      // @ts-ignore
-      expect(at.doneTaskMap.length).toEqual(1)
       expect(callCount[1]).toEqual(1)
       expect(callCount[2]).toEqual(3)
     })

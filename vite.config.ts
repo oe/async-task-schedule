@@ -22,7 +22,9 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     coverage: {
-      reporter: ['text', 'lcov']
+      reporter: ['text', 'lcov'],
+      include: ['src/**/*.ts'],
+      thresholds: { statements: 100, branches: 100, functions: 100, lines: 100 }
     }
     // ...additional Vitest settings if needed...
   },

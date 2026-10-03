@@ -1,27 +1,39 @@
 {
   "name": "async-task-schedule",
   "version": "1.0.1",
-  "description": "schedule async tasks",
-  "main": "dist/index.umd.js",
+  "description": "Batch and deduplicate async requests with TTL caching.",
+  "main": "dist/index.js",
   "module": "dist/index.es.js",
   "types": "dist/types.d.ts",
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && node scripts/compat-package.cjs",
+    "benchmark": "npm run build && node scripts/benchmark.cjs",
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.test.json",
     "test": "vitest run --coverage",
-    "release": "yarn test && yarn build && yarn publish"
+    "test:perf": "vitest run test/performance.spec.ts",
+    "release": "yarn test && yarn build && yarn publish",
+    "test:package": "npm run build && node scripts/check-package.cjs"
   },
   "keywords": [
-    "async task",
-    "schedule",
-    "task",
+    "batch",
+    "batching",
+    "deduplication",
+    "request-deduplication",
+    "coalescing",
+    "promise",
     "async",
-    "dispatch"
+    "cache",
+    "ttl",
+    "typescript"
   ],
   "repository": "https://github.com/oe/async-task-schedule.git",
   "author": "Saiya <oklark@outlook.com>",
   "license": "MIT",
   "private": false,
   "source": "src/index.ts",
+  "files": [
+    "dist"
+  ],
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@vitest/coverage-v8": "2.1.5",
@@ -29,5 +41,9 @@
     "vite": "^5.4.11",
     "vitest": "^2.1.5",
     "vite-plugin-dts": "^4.3.0"
+  },
+  "homepage": "https://github.com/oe/async-task-schedule#readme",
+  "bugs": {
+    "url": "https://github.com/oe/async-task-schedule/issues"
   }
 }

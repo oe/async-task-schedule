@@ -113,6 +113,16 @@ describe('async-task static methods', () => {
       expect(AsyncTask.isEqual(['xx', [1,2,3]], ['xx', [1,2,3]])).toEqual(true)
     })
 
+    it('handles nulls, own keys, and precise dates', () => {
+      expect(AsyncTask.isEqual(null, null)).toBe(true)
+      expect(AsyncTask.isEqual(null, {})).toBe(false)
+      expect(AsyncTask.isEqual({}, null)).toBe(false)
+      expect(AsyncTask.isEqual({ a: undefined }, { b: undefined })).toBe(false)
+      expect(AsyncTask.isEqual(new Date(1), new Date(2))).toBe(false)
+      expect(AsyncTask.isEqual(new Date(1), {})).toBe(false)
+      expect(AsyncTask.isEqual(/a/, {})).toBe(false)
+    })
+
     it('object', () => {
       expect(AsyncTask.isEqual({}, {})).toEqual(true)
       expect(AsyncTask.isEqual({}, /aa/i)).toEqual(false)

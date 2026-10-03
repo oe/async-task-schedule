@@ -1,3 +1,6 @@
+import { isEqual } from './equal'
+
+export type ITaskKey = string | number | symbol
 export type ITaskExecStrategy = 'parallel' | 'serial'
 export type ITaskWaitingStrategy = 'throttle' | 'debounce'
 export interface IAsyncTaskOptions<Task, Result> {
@@ -46,371 +49,241 @@ export interface IAsyncTaskOptions<Task, Result> {
    * check whether two tasks are identified the same
    */
   isSameTask?: (a: Task, b: Task) => boolean
+  /**
+   * Optional stable task identity for indexed deduplication and cached lookups.
+   * Equal keys identify the same task; takes precedence over isSameTask.
+   */
+  getTaskKey?: (task: Task) => ITaskKey
 }
+interface TaskRecord<Task, Result> {
+  task: Task
+  key: ITaskKey
+  state: 'pending' | 'running' | 'done'
+  promise: Promise<Result | Error>
+  resolve: (value: Result | Error) => void
+  value?: Result | Error
+  time: number
+}
+
 export default class AsyncTask<Task, Result> {
-  /**
-   * action to do batch tasks
-   *  Task: single task request info
-   *  Result: single task success response
-   * 
-   * batchDoTasks should receive multi tasks, and return result or error in order
-   */
-  private batchDoTasks?: (tasks: Task[]) => Promise<Array<Result | Error>> | Array<Result | Error>
-  
-  /**
-   * do single task
-   */
-  private doTask?: (task: Task) => Result | Error | Promise<Result | Error>
+  private options: IAsyncTaskOptions<Task, Result>
+  private records = new Map<ITaskKey, TaskRecord<Task, Result>>()
+  private pending: Array<TaskRecord<Task, Result>> = []
+  private pendingHead = 0
+  private active = 0
+  private pumping = false
+  private clearRequested = false
+  private nextExpiry = Infinity
+  private timeout?: ReturnType<typeof setTimeout>
+  private nextTime?: number
 
-  /**
-   * check whether two tasks are equal
-   *  it helps to avoid duplicated tasks
-   *  default:  AsyncTask.isEqual (deep comparison)
-   */
-  private isSameTask: (a: Task, b: Task) => boolean
-
-  /**
-   * max task count for batchDoTasks, default unlimited
-   *  undefined or 0 for unlimited
-   */
-  private maxBatchCount?: number
-
-  /**
-   * batch tasks executing strategy, default parallel
-   *  only works if maxBatchCount is specified and tasks more than maxBatchCount are executed
-   *  
-   * parallel: split all tasks into a list stride by maxBatchCount, exec them at the same time
-   * serial: split all tasks into a list stride by maxBatchCount, exec theme one group by one group
-   *    if serial specified, when tasks are executing, new comings will wait for them to complete
-   *    it's very useful to cool down task requests
-   */
-  private taskExecStrategy: ITaskExecStrategy
-
-  /**
-   * task waiting stragy, default to debounce
-   *  throttle: tasks will combined and dispatch every `maxWaitingGap`
-   *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
-   */
-  private taskWaitingStrategy: ITaskWaitingStrategy
-
-  /**
-   * task waiting time in milliseconds, default 50ms
-   *     differently according to taskWaitingStrategy
-   */
-  private maxWaitingGap: number
-
-  /**
-   * validity(caching duration) of the result(in ms), default unlimited
-   *    - undefined or 0 for unlimited
-   *    - function to specified each task's validity
-   *       - function receive (task, result) as parameters
-   *       - return a number(ms) as the validity of the result
-   *  
-   * default to 1s
-   * 
-   * cache is lazy cleaned after invalid
-   */
-  private invalidAfter?: number | ((task: Task, result: Result | Error) => number)
-
-  /**
-   * retry failed tasks next time after failing, default true
-   */
-  private retryWhenFailed?: boolean
-
-  /**
-   * tasks ready to be executed
-   */
-  private pendingTasks: Task[]
-
-  /**
-   * original tasks request in queue waiting to resolve
-   *  empty if all task are done
-   */
-  private taskQueue: Array<{
-    tasks: Task[]|Task, resolve: Function, reject: Function, isDone?: boolean }>
-  
-  /**
-   * cached task result
-   */
-  private doneTaskMap: Array<{ task: Task, value: Result | Error, time: number }>
-  
-  /**
-   * whether need to clean cache result, aka clean doneTaskMap
-   */
-  private needCleanCache?: boolean
-  /**
-   * default task options
-   */
-  private static defaultOptions = {
-    isSameTask: AsyncTask.isEqual,
-    taskExecStrategy: 'parallel' as const,
-    maxWaitingGap: 50,
-    invalidAfter: 1000,
-    taskWaitingStrategy: 'debounce' as const,
-    retryWhenFailed: true,
-  }
-
-  constructor(options: IAsyncTaskOptions<Task, Result>) {
-    const userOptions = { ...AsyncTask.defaultOptions, ...options }
-    this.pendingTasks = []
-    this.doneTaskMap = []
-    this.taskQueue = []
-    this.isSameTask = userOptions.isSameTask
-    this.maxBatchCount = userOptions.maxBatchCount
-    this.maxWaitingGap = userOptions.maxWaitingGap
-
-    this.taskWaitingStrategy = userOptions.taskWaitingStrategy
-    if (!userOptions.batchDoTasks && !userOptions.doTask) {
-      throw new Error('one of batchDoTasks / doTask must be specified')
-    }
-    this.doTask = userOptions.doTask
-    this.batchDoTasks = userOptions.batchDoTasks
-
-    this.taskExecStrategy = userOptions.taskExecStrategy
-    if (this.taskExecStrategy === 'serial') {
-      this.maxBatchCount = 1
-    }
-
-    this.retryWhenFailed = userOptions.retryWhenFailed
-    this.invalidAfter = userOptions.invalidAfter
-    this.runTasks = this.runTasks.bind(this)
-    this.dispatch = this.dispatch.bind(this)
-  }
-  /**
-   * execute task, get task result in promise
-   */
-  async dispatch(task: Task): Promise<Result>
-  /**
-   * execute tasks, get response in tuple of task and result/error
-   */
-  async dispatch<T extends readonly Task[] | []>(tasks: T): Promise<{ [k in keyof T]: Result | Error } >
-  async dispatch(tasks: Task[] | Task) {
-    this.cleanupTasks()
-    try {
-      const result = this.tryGetTaskResult(tasks)
-      return Promise.resolve(result)
-    } catch (error) {
-      // note all tasks are cached, just created new tasks
-    }
-    return new Promise((resolve, reject) => {
-      this.createTasks(tasks, resolve, reject)
-    })
-  }
-
-  /**
-   * clean cached task result
-   *  - this may not exec immediately
-   *  - it will take effect after all tasks are done
-   */
-  cleanCache() {
-    this.needCleanCache = true
-    this.cleanCacheIfNeeded()
-  }
-
-  /**
-   * clean cache if needed
-   */
-  private cleanCacheIfNeeded() {
-    if (!this.needCleanCache) return
-    if (this.pendingTasks.length || this.taskQueue.length) return
-    this.needCleanCache = false
-    this.doneTaskMap = []
-  }
-
-  /** tasks combine waiting timeout */
-  private timeoutId?: any
-
-  /** next exec time for taskWaitingStrategy === 'throttle' */
-  private nextTime?: any
-
-  /**
-   * create tasks
-   * @param tasks task list
-   * @param resolve promise resolve function
-   * @param reject promise reject function
-   */
-  private createTasks(tasks: Task | Task[], resolve: Function, reject: Function) {
-    this.taskQueue.push({ tasks, resolve, reject })
-    let myTasks = Array.isArray(tasks) ? tasks : [tasks]
-    // remove duplicated tasks in itself
-    myTasks = myTasks.filter((task, idx) => idx === myTasks.findIndex(t => this.isSameTask(t, task)))
-    // remove pending tasks
-    if (this.pendingTasks.length) {
-      myTasks = myTasks.filter((f) => !this.hasTask(this.pendingTasks, f))
-    }
-    // remove done tasks
-    if (myTasks.length) {
-      myTasks = myTasks.filter((f) => !this.getTaskResult(f))
-    }
-    if (!myTasks.length) return
-    this.pendingTasks = this.pendingTasks.concat(myTasks)
-
-    clearTimeout(this.timeoutId)
-    let timeout = 0
-    if (this.taskWaitingStrategy === 'throttle') {
-      const now = Date.now()
-      this.nextTime = (!this.nextTime || now > this.nextTime)
-      ? now + this.maxWaitingGap : this.nextTime
-      timeout = this.nextTime - now
-    } else {
-      timeout = this.maxWaitingGap
-    }
-    this.timeoutId = setTimeout(this.runTasks, timeout)
-  }
-
-  // whether task is running
+  // Preserve the public running indicator; internal progress uses record counts.
   isTaskRunning = false
 
-  private runTasks() {
-    if (this.isTaskRunning || !this.pendingTasks.length) return
+  constructor(options: IAsyncTaskOptions<Task, Result>) {
+    if (!options.batchDoTasks && !options.doTask) {
+      throw new Error('one of batchDoTasks / doTask must be specified')
+    }
+    const count = options.maxBatchCount
+    if (count !== undefined && count !== 0 && (!Number.isInteger(count) || count < 1)) {
+      throw new Error('maxBatchCount must be a positive integer or 0 for unlimited')
+    }
+    this.options = {
+      ...options,
+      isSameTask: options.isSameTask ?? AsyncTask.isEqual,
+      taskExecStrategy: options.taskExecStrategy ?? 'parallel',
+      taskWaitingStrategy: options.taskWaitingStrategy ?? 'debounce',
+      maxWaitingGap: options.maxWaitingGap ?? 50,
+      retryWhenFailed: options.retryWhenFailed ?? true,
+      // Explicit undefined TTL retains the documented unlimited-cache behavior.
+      invalidAfter: 'invalidAfter' in options ? options.invalidAfter : 1000,
+    }
+    this.dispatch = this.dispatch.bind(this)
+  }
+
+  async dispatch(task: Task): Promise<Result>
+  async dispatch<T extends readonly Task[] | []>(tasks: T): Promise<{ [k in keyof T]: Result | Error }>
+  async dispatch(tasks: Task | Task[]): Promise<unknown> {
+    this.cleanupExpired()
+    const requested = Array.isArray(tasks) ? tasks : [tasks]
+    // Identity callbacks run before changes are committed, and only at dispatch.
+    const keys = this.options.getTaskKey ? requested.map(task => this.options.getTaskKey!.call(this, task)) : undefined
+    if (keys && !Array.isArray(tasks)) {
+      const cached = this.records.get(keys[0])
+      if (cached?.state === 'done') return this.unwrap(cached.value!)
+    }
+    const staged = new Map<ITaskKey, TaskRecord<Task, Result>>()
+    const records = requested.map((task, index) => {
+      const key = keys ? keys[index] : Symbol()
+      const existing = keys
+        ? this.records.get(key) || staged.get(key)
+        : this.findRecord(task, this.records) || this.findRecord(task, staged)
+      if (existing) return existing
+      let resolve!: (value: Result | Error) => void
+      const promise = new Promise<Result | Error>(done => { resolve = done })
+      const record: TaskRecord<Task, Result> = { task, key, state: 'pending', promise, resolve, time: 0 }
+      staged.set(key, record)
+      return record
+    })
+    for (const record of staged.values()) {
+      this.records.set(record.key, record)
+      this.pending.push(record)
+    }
+    if (staged.size) this.schedule()
+    if (Array.isArray(tasks)) return Promise.all(records.map(record => record.promise))
+    const record = records[0]
+    return this.unwrap(record.state === 'done' ? record.value! : await record.promise)
+  }
+
+  private unwrap(value: Result | Error) {
+    if (value instanceof Error) throw value
+    return value
+  }
+
+  private findRecord(task: Task, records: Map<ITaskKey, TaskRecord<Task, Result>>) {
+    for (const record of records.values()) {
+      if (this.options.isSameTask!.call(this, record.task, task)) return record
+    }
+  }
+
+  /** Cache clearing still waits for all pending and running work. */
+  cleanCache() {
+    this.clearRequested = true
+    this.clearIfIdle()
+  }
+
+  private clearIfIdle() {
+    if (this.clearRequested && !this.active && this.pendingHead === this.pending.length) {
+      this.records.clear()
+      this.nextExpiry = Infinity
+      this.clearRequested = false
+    }
+  }
+
+  private schedule() {
+    clearTimeout(this.timeout)
+    let wait = this.options.maxWaitingGap!
+    if (this.options.taskWaitingStrategy === 'throttle') {
+      const now = Date.now()
+      if (this.nextTime === undefined || now > this.nextTime) this.nextTime = now + wait
+      wait = this.nextTime - now
+    }
+    this.timeout = setTimeout(() => { void this.run() }, wait)
+  }
+
+  /** Consume with a cursor so serial batches do not shift the remaining queue. */
+  private take(count: number) {
+    const records = this.pending.slice(this.pendingHead, this.pendingHead + count)
+    this.pendingHead += records.length
+    if (this.pendingHead === this.pending.length) {
+      this.pending = []
+      this.pendingHead = 0
+    }
+    for (const record of records) record.state = 'running'
+    this.active += records.length
     this.isTaskRunning = true
-    if (this.batchDoTasks) {
-      this.runTaskWithBatchDoTasks()
-    } else {
-      this.runTasksWithDoTask()
-    }
+    return records
   }
 
-  private async runTasksWithDoTask() {
-    const taskItems = this.pendingTasks.splice(0, this.maxBatchCount || this.pendingTasks.length)
-    taskItems.forEach(async (task) => {
-      try {
-        const result = await this.doTask!(task)
-        this.updateResultMap([task], [result])
-      } catch (error) {
-        this.updateResultMap([task], AsyncTask.wrapError(error))
-      }
-      this.checkAllTasks()
-      if (this.pendingTasks.length) {
-        this.runTasksWithDoTask()
-      } else {
-        this.cleanupTasks()
-        this.isTaskRunning = false
-      }
-    })
-  }
-
-  private async runTaskWithBatchDoTasks() {
-    const taskItems = this.pendingTasks.splice(0, this.maxBatchCount || this.pendingTasks.length)
+  private async run() {
+    if (this.pumping || this.pendingHead === this.pending.length) return
+    this.pumping = true
     try {
-      const result = await this.batchDoTasks!(taskItems)
-      this.updateResultMap(taskItems, result)
-    } catch (error) {
-      this.updateResultMap(taskItems, AsyncTask.wrapError(error))
-    }
-    this.checkAllTasks()
-    if (this.pendingTasks.length) {
-      this.runTaskWithBatchDoTasks()
-    } else {
-      this.cleanupTasks()
-      this.isTaskRunning = false
+      while (this.pumping && this.pendingHead < this.pending.length) {
+        const available = this.pending.length - this.pendingHead
+        const count = this.options.maxBatchCount || (this.options.batchDoTasks ? available : 1)
+        if (this.options.taskExecStrategy === 'serial') {
+          await this.execute(this.take(count))
+        } else {
+          const records = this.take(available)
+          const stride = this.options.maxBatchCount || records.length
+          const batches: Array<Promise<void>> = []
+          for (let i = 0; i < records.length; i += stride) batches.push(this.execute(records.slice(i, i + stride)))
+          await Promise.all(batches)
+        }
+      }
+    } finally {
+      this.pumping = false
+      this.isTaskRunning = this.active > 0
+      this.clearIfIdle()
     }
   }
 
-  /**
-   * check all tasks, try to resolve
-   */
-  private checkAllTasks() {
-    this.taskQueue.forEach((taskItem) => {
+  private async execute(records: Array<TaskRecord<Task, Result>>) {
+    if (this.options.batchDoTasks) {
+      let results: Array<Result | Error>
       try {
-        const result = this.tryGetTaskResult(taskItem.tasks)
-        // eslint-disable-next-line no-param-reassign
-        taskItem.isDone = true
-        taskItem.resolve(result)
+        results = await this.options.batchDoTasks.call(this, records.map(record => record.task))
+        if (!Array.isArray(results)) throw new TypeError('batchDoTasks must return an array')
       } catch (error) {
-        // not found
+        results = records.map(() => AsyncTask.wrapError(error))
       }
-    })
-    // clean done task
-    this.taskQueue = this.taskQueue.filter((task) => !task.isDone)
-  }
-
-  /**
-   * get result list of given tasks
-   *  throw error when not found(to make it easier to distinct from falsy results)
-   * @param tasks tasks to check
-   * @param defaultResult default result if not found
-   */
-  private tryGetTaskResult(tasks: Task[] | Task): (Result | Error) | Array<Result | Error> {
-    // no cached data and no default result provided
-    if (!this.doneTaskMap.length) throw new Error('no done task')
-
-    if (Array.isArray(tasks)) {
-      const result: Array<Result | Error> = []
-      return tasks.reduce((acc, task) => {
-        const val = this.getTaskResult(task)
-        if (!val) throw new Error('not found')
-        acc.push(val[1])
-        return acc
-      }, result)
-    }
-    const val = this.getTaskResult(tasks)
-    if (!val) throw new Error('not found')
-    return val[1]
-  }
-
-  private getTaskResult(task: Task): [Task, Result | Error] | undefined {
-    const result = this.doneTaskMap.find((t) => this.isSameTask(task, t.task))
-    if (result) {
-      return [result.task, result.value]
-    }
-  }
-
-  private hasTask(list: Task[], task: Task): boolean {
-    return list.some((item) => this.isSameTask(task, item))
-  }
-
-
-  private updateResultMap(tasks: Task[], result: Array<Result | Error> | Error) {
-    const now = Date.now()
-    let doneArray: any[] = []
-    if (result instanceof Error) {
-      doneArray = tasks.map((t) => ({ task: t, value: result, time: now }))
+      let missing: Error | undefined
+      records.forEach((record, index) => this.complete(record, index < results.length
+        ? results[index] : (missing || (missing = new Error('not found')))))
     } else {
-      const defaultValue = new Error('not found')
-      doneArray = tasks.map((t, idx) => {
-        const taskResult = result.length > idx ? result[idx] : defaultValue
-        return { task: t, value: taskResult, time: now }
-      })
+      await Promise.all(records.map(async record => {
+        let value: Result | Error
+        try { value = await this.options.doTask!.call(this, record.task) }
+        catch (error) { value = AsyncTask.wrapError(error) }
+        this.complete(record, value)
+      }))
     }
-    this.doneTaskMap = this.doneTaskMap.concat(doneArray)
   }
 
-  /**
-   * clean tasks
-   *  - try to clean cache if needed
-   *  - try to remove failed result, remove outdated cache if needed
-   */
-  private cleanupTasks() {
-    this.cleanCacheIfNeeded()
-    // has unresolved tasks, unable to cleanup task
-    if (this.taskQueue.length) return
-    // nothing to cleanup
-    if (!this.doneTaskMap.length) return
-    // no need to remove outdated or failed tasks
-    if (!this.invalidAfter && !this.retryWhenFailed) return
+  private validity(record: TaskRecord<Task, Result>) {
+    const ttl = this.options.invalidAfter
+    return typeof ttl === 'function' ? ttl.call(this, record.task, record.value!) : ttl
+  }
+
+  private complete(record: TaskRecord<Task, Result>, value: Result | Error) {
+    record.value = value
+    record.time = Date.now()
+    try {
+      if (value instanceof Error && this.options.retryWhenFailed) {
+        this.records.delete(record.key)
+      } else {
+        const ttl = this.validity(record)
+        if (ttl && ttl < 0) this.records.delete(record.key)
+        else if (ttl) this.nextExpiry = Math.min(this.nextExpiry, Math.floor(record.time + ttl) + 1)
+      }
+    } catch (error) {
+      // A policy failure settles this task and cannot escape the background pump.
+      value = AsyncTask.wrapError(error)
+      this.records.delete(record.key)
+    }
+    record.value = value
+    record.state = 'done'
+    --this.active
+    if (!this.active && this.pendingHead === this.pending.length) {
+      this.isTaskRunning = false
+      this.pumping = false
+    }
+    this.clearIfIdle()
+    record.resolve(value)
+  }
+
+  private cleanupExpired() {
     const now = Date.now()
-    this.doneTaskMap = this.doneTaskMap.filter((item) => {
-      if (this.retryWhenFailed && item.value instanceof Error) {
-        return false
-      }
-      if (this.invalidAfter) {
-        const invalidAfter = typeof this.invalidAfter === 'function' ? this.invalidAfter(item.task, item.value) : this.invalidAfter
-        if (!invalidAfter) return true
-        return now - item.time <= invalidAfter
-      }
-      return true
-    })
+    if (typeof this.options.invalidAfter !== 'function' && now < this.nextExpiry) return
+    this.nextExpiry = Infinity
+    for (const record of this.records.values()) {
+      if (record.state !== 'done') continue
+      let ttl: number | undefined
+      try { ttl = this.validity(record) }
+      catch (error) { this.records.delete(record.key); throw error }
+      if (!ttl) continue
+      if (now - record.time > ttl) this.records.delete(record.key)
+      else this.nextExpiry = Math.min(this.nextExpiry, Math.floor(record.time + ttl) + 1)
+    }
   }
-
   /**
    * wrap error info, if it's not instanceof Error, wrap it with Error
    * @returns Error instance
    */
   static wrapError(e: unknown): Error {
     if (e instanceof Error) return e
-    const newError = new Error('task failed')
-    // @ts-ignore
+    const newError = new Error('task failed') as Error & { original: unknown }
     newError.original = e
     return newError
   }
@@ -434,24 +307,6 @@ export default class AsyncTask<Task, Result> {
    * check whether the given values are equal (with deep comparison)
    */
   static isEqual(a: unknown, b: unknown): boolean {
-    if (a === b) return true
-    const typeA = typeof a
-    const typeB = typeof b
-    if (typeA !== typeB) return false
-    // @ts-ignore
-    // for nan
-    if (typeA === 'number' && isNaN(a) && isNaN(b)) return true
-    // none object type, aka primitive types, are checked by the first line
-    if (typeA !== 'object') return false
-    // if one of them is regexp, check via regexp literal
-    if (a instanceof RegExp || b instanceof RegExp) return String(a) === String(b)
-    if (a instanceof Date || b instanceof Date) return String(a) === String(b)
-    // only one is array
-    if (Array.isArray(a) !== Array.isArray(b)) return false
-    // @ts-ignore
-    if (Object.keys(a).length !== Object.keys(b).length) return false
-    // @ts-ignore
-    if (Object.keys(a).some(k => !AsyncTask.isEqual(a[k], b[k]))) return false
-    return true
+    return isEqual(a, b)
   }
 }
