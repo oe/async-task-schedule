@@ -1,7 +1,7 @@
 {
   "name": "async-task-schedule",
   "version": "1.0.1",
-  "description": "schedule async tasks",
+  "description": "Batch and deduplicate async requests with TTL caching.",
   "main": "dist/index.umd.js",
   "module": "dist/index.es.js",
   "types": "dist/index.d.ts",
@@ -14,18 +14,25 @@
     "release": "yarn test && yarn build && yarn publish"
   },
   "keywords": [
-    "async task",
-    "schedule",
-    "task",
+    "batch",
+    "batching",
+    "deduplication",
+    "request-deduplication",
+    "coalescing",
+    "promise",
     "async",
-    "dispatch"
+    "cache",
+    "ttl",
+    "typescript"
   ],
   "repository": "https://github.com/oe/async-task-schedule.git",
   "author": "Saiya <oklark@outlook.com>",
   "license": "MIT",
   "private": false,
   "source": "src/index.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@vitest/coverage-v8": "2.1.5",
@@ -33,5 +40,9 @@
     "vite": "^5.4.11",
     "vitest": "^2.1.5",
     "vite-plugin-dts": "^4.3.0"
+  },
+  "homepage": "https://github.com/oe/async-task-schedule#readme",
+  "bugs": {
+    "url": "https://github.com/oe/async-task-schedule/issues"
   }
 }

@@ -1,436 +1,255 @@
 # async-task-schedule
 
+**Batch and deduplicate async requests with TTL caching.**
 
-<div align="center">
-  <a href="https://github.com/oe/async-task-schedule/actions">
-    <img src="https://github.com/oe/async-task-schedule/actions/workflows/main.yml/badge.svg" alt="github actions">
-  </a>
-  <img src="https://img.shields.io/badge/coverage-100%25-brightgreen?logo=codecov" alt="use it with confident">
-  <a href="#readme">
-    <img src="https://badgen.net/badge/Built%20With/TypeScript/blue" alt="code with typescript" height="20">
-  </a>
-  <a href="#readme">
-    <img src="https://badge.fury.io/js/async-task-schedule.svg" alt="npm version" height="20">
-  </a>
-  <a href="https://www.npmjs.com/package/async-task-schedule">
-    <img src="https://img.shields.io/npm/dm/async-task-schedule.svg" alt="npm downloads" height="20">
-  </a>
-</div>
+[![CI](https://github.com/oe/async-task-schedule/actions/workflows/main.yml/badge.svg)](https://github.com/oe/async-task-schedule/actions/workflows/main.yml)
+[![npm version](https://img.shields.io/npm/v/async-task-schedule)](https://www.npmjs.com/package/async-task-schedule)
+[![MIT license](https://img.shields.io/npm/l/async-task-schedule)](./LICENSE)
 
-schedule async tasks in order
-
-## Features
-* remove duplicated tasks' requests
-* combine tasks' requests in same time and do all together
-* can prevent massive requests at same time, make them execute one group by one group
-* cache result and can specify validity
-
+Let multiple callers share one execution for the same task. Group distinct tasks
+into a batch when your API supports it, and reuse completed results for a configurable
+time. Works with synchronous or asynchronous functions, in Node.js and browsers.
+TypeScript declarations are included; there are no runtime dependencies.
 
 ## Install
+
 ```sh
-yarn add async-task-schedule
-# or with npm
-npm install async-task-schedule -S
+npm install async-task-schedule
 ```
 
-## Usage
+The examples below use existing APIs unless marked **unreleased**. The latest npm
+release is currently 1.0.1; `getTaskKey` and the improvements in
+[PR #1](https://github.com/oe/async-task-schedule/pull/1) are awaiting publication.
+For the default TypeScript imports shown here with npm 1.0.1, enable
+`esModuleInterop` in your `tsconfig.json`.
+
+## Quick start: six calls, one batch
+
+This example runs without a server. Replace the executor with your batch endpoint
+when integrating it into your application.
 
 ```ts
 import TaskSchedule from 'async-task-schedule'
-let count = 0
-const taskSchedule = new TaskSchedule({
-    doTask: async (name: string) => {
-        count += 1
-      return `${name}${count}`
+
+async function main() {
+  let requests = 0
+  const users = new TaskSchedule({
+    batchDoTasks: async (ids: string[]) => {
+      requests += 1
+      console.log('Batch:', ids)
+      return ids.map(id => ({ id, name: `User ${id}` }))
     },
-    // or use this will do the same
-    // batchDoTasks: async (names: string[]) => {
-    //   count += 1
-    //   return names.map((n) => `${n}${count}`)
-    // },
+    maxWaitingGap: 10,
+    invalidAfter: 3000,
+  })
+
+  const results = await Promise.all(
+    ['a', 'b', 'b', 'c', 'a', 'd'].map(id => users.dispatch(id)),
+  )
+
+  console.log(results.map(user => user.id)) // ['a', 'b', 'b', 'c', 'a', 'd']
+  console.log(requests)                     // 1: batch ['a', 'b', 'c', 'd']
+
+  await users.dispatch('a')                 // cached; no extra request
+  console.log(requests)                     // 1
+}
+
+main().catch(console.error)
+```
+
+Submit calls before awaiting their results to let them join the same waiting window.
+Sequential `await` calls cannot join a batch that has already executed, although
+those calls can reuse cached results. You can also submit multiple tasks with
+`users.dispatch(['a', 'b'])`; results preserve the input order, including duplicates.
+
+## When to use it
+
+- Several parts of your application request the same data at nearly the same time.
+- Your backend accepts batches, but callers need a convenient single-item function.
+- You want a short-lived result cache around an existing async function.
+- You want to execute batches serially instead of starting them all together.
+
+| Your main need | Consider |
+| --- | --- |
+| Wrap existing functions with deduplication, batching and built-in TTL | async-task-schedule |
+| A mature data loader with batching and request-scoped caching | [DataLoader](https://github.com/graphql/dataloader), which also supports custom scheduling and cache implementations |
+| A global concurrency limit or a task queue | [p-limit](https://github.com/sindresorhus/p-limit) or [p-queue](https://github.com/sindresorhus/p-queue) |
+| Async function memoization without batching | [p-memoize](https://github.com/sindresorhus/p-memoize) |
+| Fetch state, retries and revalidation for a frontend framework | [SWR](https://swr.vercel.app/) or [TanStack Query](https://tanstack.com/query) |
+
+`maxBatchCount` limits the size of each batch. In parallel mode it does **not** impose
+a global concurrency limit. The waiting window adds latency (50 ms by default);
+choose it according to your application's latency budget.
+
+## Recipes
+
+### Deduplicate a JSON read and cache it for three seconds
+
+Use `doTask` when the service has no batch endpoint. Cache parsed data rather than
+a raw Fetch `Response`, whose body can only be consumed once.
+
+```ts
+import TaskSchedule from 'async-task-schedule'
+
+type User = { id: string; name: string }
+
+// Use a separate instance for each authentication / tenant context.
+const users = new TaskSchedule({
+  async doTask(id: string): Promise<User> {
+    const response = await fetch(`/api/users/${encodeURIComponent(id)}`)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return response.json()
+  },
+  invalidAfter: 3000,
+  maxWaitingGap: 0,
 })
 
-taskSchedule.dispatch(['a', 'b']).then(console.log)
-taskSchedule.dispatch(['b', 'c']).then(console.log)
-taskSchedule.dispatch(['d', 'c']).then(console.log)
-taskSchedule.dispatch('c').then(console.log)
-// batchDoTasks will be only called once
-
+export const getUser = (id: string) => users.dispatch(id)
 ```
-**NOTICE**: in following example, tasks won't combine
+
+Use the instance for repeatable reads. A short TTL still shares pending and running
+tasks, so it does not make deduplication appropriate for writes that must execute
+once per call. Include every result-affecting input in task identity, including
+tenant, authorization context and query options. Avoid sharing a cache across users
+with different permissions. Treat cached objects as shared data; clone them before
+caller-specific mutation.
+
+### Limit batch size and execute batches serially
+
+**Unreleased fix:** the upcoming version preserves `maxBatchCount` in serial mode.
+In npm 1.0.1, serial mode forces batches of one item, so this example's batch sizes
+require the upcoming release.
+
 ```ts
-// batchDoTasks will be executed 3 times due to javascript language features
-const result1 = await taskSchedule.dispatch(['a', 'b'])
-const result2 = await taskSchedule.dispatch(['b', 'c'])
-const result3 = await taskSchedule.dispatch(['d', 'c'])
-const result4 = await taskSchedule.dispatch('c')
+import TaskSchedule from 'async-task-schedule'
+
+async function main() {
+  const users = new TaskSchedule({
+    batchDoTasks: async (ids: string[]) => {
+      console.log('Batch:', ids)
+      return ids.map(id => ({ id }))
+    },
+    maxBatchCount: 2,
+    taskExecStrategy: 'serial',
+  })
+
+  await users.dispatch(['a', 'b', 'c', 'd', 'e'])
+  // Batches: ['a', 'b'], then ['c', 'd'], then ['e'].
+}
+
+main().catch(console.error)
 ```
 
+A real batch executor must return one result or `Error` for each input, in the same
+order. If your endpoint returns unordered rows, map them back to the requested IDs.
+Throwing from the executor fails the entire batch; returning an `Error` entry fails
+only that item. Serial execution waits for each batch to finish; it does not enforce
+a fixed number of requests per second.
 
 ## API
 
-### constructor(options: ITaskScheduleOptions)
+### `new TaskSchedule(options)`
 
-options define:
+Supply `doTask`, `batchDoTasks`, or both. If both are supplied, `batchDoTasks` takes priority.
 
-```ts
-// `Task` for single task's parameters
-// `Result` for single task's response
-interface ITaskScheduleOptions<Task, Result> {
-  /**
-   * action to do batch tasks, can be async or sync function
-   *  Task: single task request info
-   *  Result: single task success response
-   * 
-   * batchDoTasks should receive multitasks, and return result or error in order
-   * one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
-   */
-  batchDoTasks?: (tasks: Task[]) => Promise<Array<Result | Error>> | Array<Result | Error>
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `doTask(task)` | — | Execute one task; return a value or Promise. |
+| `batchDoTasks(tasks)` | — | Execute a batch; return an array or Promise of results / `Error` entries, in input order. |
+| `isSameTask(a, b)` | `TaskSchedule.isEqual` | Compare task inputs for deduplication and cache lookup. |
+| `getTaskKey(task)` **unreleased** | — | Stable string, number or symbol identity for indexed lookup; takes precedence over `isSameTask`. |
+| `maxBatchCount` | Unlimited | `0` or omitted means unlimited; otherwise use a positive integer. |
+| `taskExecStrategy` | `'parallel'` | `'parallel'` starts batches together; `'serial'` waits for each batch. In serial mode, `doTask` without a batch size runs one task at a time. |
+| `taskWaitingStrategy` | `'debounce'` | `'debounce'` resets the waiting window when new tasks arrive; `'throttle'` keeps a window measured from its first arrival. |
+| `maxWaitingGap` | `50` | Waiting-window duration in milliseconds. |
+| `invalidAfter` | `1000` | Cache TTL in milliseconds, or `(task, resultOrError) => ttl`. `0` or explicit `undefined` retains results indefinitely. |
+| `retryWhenFailed` | `true` | Allow a later dispatch of a failed task to execute again. |
 
-  /**
-   * action to do single task, can be async or sync function
-   *  one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
-   */
-  doTask?: (task: Task) => Promise<Result> | Result
+Cache TTL starts when execution completes. Expiration is checked lazily on dispatch;
+expired entries are not removed by a background timer. `invalidAfter: 1` means a
+one-millisecond TTL, and still allows in-flight deduplication. Use a finite TTL or
+`cleanCache()` to avoid retaining an unbounded set of successful results.
 
-  /**
-   * check whether two tasks are equal
-   *  it helps to avoid duplicated tasks
-   *  default: AsyncTask.isEqual (deep equal)
-   */
-  isSameTask?: (a: Task, b: Task) => boolean
+### `dispatch(task)` and `dispatch(tasks)`
 
-  /**
-   * optional stable task identity, used for indexed deduplication and cache lookup
-   * same keys mean the same task; takes precedence over isSameTask
-   * return a string, number, or symbol
-   */
-  getTaskKey?: (task: Task) => string | number | symbol
-
-  /**
-   * max task count for batchDoTasks, default unlimited
-   *  undefined or 0 for unlimited; otherwise a positive integer
-   */
-  maxBatchCount?: number
-
-  /**
-   * batch tasks executing strategy, default parallel
-   *  serial preserves maxBatchCount; doTask defaults to one task at a time
-   *  
-   * parallel: split all tasks into a list stride by maxBatchCount, exec them at the same time
-   * serial: split all tasks into a list stride by maxBatchCount, exec theme one group by one group
-   *    if serial specified, when tasks are executing, new comings will wait for them to complete
-   *    it's especially useful to cool down task requests
-   */
-  taskExecStrategy?: 'parallel' | 'serial'
-
-  /**
-   * task waiting strategy, default to debounce
-   *  throttle: tasks will combined and dispatch every `maxWaitingGap`
-   *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
-   */
-  taskWaitingStrategy?: 'throttle' | 'debounce'
-
-  /**
-   * task waiting time in milliseconds, default 50ms
-   *     differently according to taskWaitingStrategy
-   */
-  maxWaitingGap?: number
-
-
-  /**
-   * task result caching duration(in milliseconds), default to 1000ms (1s)
-   * > `undefined` or `0` for unlimited  
-   * > set to minimum value `1` to disable caching  
-   * > `function` to specified specified each task's validity
-   * 
-   * *cache is lazy cleaned after invalid*
-   */
-  invalidAfter?: number | ((task: Task, result: Result | Error) => number)
-
-  /**
-   * retry failed tasks next time after failing, default true
-   */
-  retryWhenFailed?: boolean
-}
-```
-
-example:
-```ts
-import TaskSchedule from 'async-task-schedule'
-
-const taskSchedule = new TaskSchedule({
-  doTask(n) { 
-    console.log(`do task with ${n}`)
-    return n * n
-  },
-  invalidAfter: 0
-})
-
-const result = await taskSchedule.dispatch([1,2,3,1,2])
-// get first result
-const resultOf1 = result[0] // 1
-// doTask won't be called
-const result11 = await taskSchedule.dispatch(1) // 1
-
-// clean all cached result
-taskSchedule.cleanCache()
-// doTask will be call again
-const result12 = await taskSchedule.dispatch(1) // 1
-
-```
-
-### dispatch(tasks: Task[]):Promise<Array<Result | Error>>
-dispatch multitasks at a time, will get response with corresponding order of `tasks`
-an empty task list resolves immediately to `[]`; this method won't throw task execution errors, it will fulfil even partially failed, you can check whether its success by `response instanceof Error`
+- A single task resolves to its result, or rejects on failure.
+- An array resolves to results or `Error` entries in input order. Task failures do
+  not reject the array dispatch; identity / cache-policy callback failures can reject it.
+- An array always means multiple tasks. Wrap an array-valued single input in an object.
 
 ```ts
 import TaskSchedule from 'async-task-schedule'
 
-const taskSchedule = new TaskSchedule({
-  doTask(n) { 
-    console.log(`do task with ${n}`)
-    if (n % 2) throw new Error(`${n} is unsupported`)
-    return n * n
-  },
-  invalidAfter: 0
-})
+async function main() {
+  const squares = new TaskSchedule({
+    doTask(n: number) {
+      if (n < 0) throw new Error('Expected a non-negative number')
+      return n * n
+    },
+    maxWaitingGap: 0,
+  })
 
-const result = await taskSchedule.dispatch([1,2,3,1,2])
-// get first result
-const resultOf1 = result[0] // Error
-// first result is error
-const isError = result[0] instanceof Error // true
+  const results = await squares.dispatch([2, -1, 3])
+  console.log(results[0], results[1] instanceof Error, results[2]) // 4, true, 9
 
-
-try {
-  // will throw an error
-  const result2 = await taskSchedule.dispatch(1) // throws
-} catch(error) {
-  console.warn(error)
-}
-```
-
-
-### dispatch(tasks: Task):Promise<Result>
-dispatch a task, will get response if success, or throw an error
-
-```ts
-import TaskSchedule from 'async-task-schedule'
-
-const taskSchedule = new TaskSchedule({
-  doTask(n) { 
-    console.log(`do task with ${n}`)
-    if (n % 2) throw new Error(`${n} is unsupported`)
-    return n * n
-  },
-  invalidAfter: 0
-})
-
-const result1 = await taskSchedule.dispatch(2) // 4
-try {
-  const result2 = await taskSchedule.dispatch(1)
-} catch(error) {
-  console.warn(error)
-}
-```
-
-### cleanCache
-clean cached tasks' result, so older task will trigger new request and get fresh response.
-
-attention: this action may not exec immediately, it will take effect after all tasks are done
-
-```ts
-import TaskSchedule from 'async-task-schedule'
-
-const taskSchedule = new TaskSchedule({
-  doTask(n) { 
-    console.log(`do task with ${n}`)
-    return n * n
-  },
-  invalidAfter: 0
-})
-
-await Promise.all([
-  taskSchedule.dispatch([1, 2, 3, 1, 2]),
-  taskSchedule.dispatch([1, 9, 10, 12, 22]),
-])
-// clean all cached result
-taskSchedule.cleanCache()
-// task will execute again
-const result = await taskSchedule.dispatch(1)
-
-```
-
-## utils methods
-there are some utils method as static members of `async-task-schedule`
-
-
-### isEqual(a: unknown, b: unknown): boolean
-check whether the given values are equal (with deep comparison)
-
-```ts
-import TaskSchedule from 'async-task-schedule'
-
-TaskSchedule.isEqual(1, '1') // false
-TaskSchedule.isEqual('1', '1') // true
-TaskSchedule.isEqual(NaN, NaN) // true
-TaskSchedule.isEqual({a: 'a', b: 'b'}, {b: 'b', a: 'a'}) // true
-TaskSchedule.isEqual({a: 'a', b: 'b', c: {e: [1,2,3]}}, {b: 'b', c: {e: [1,2,3]}, a: 'a'}) // true
-TaskSchedule.isEqual({a: 'a', b: /acx/}, {b: new RegExp('acx'), a: 'a'}) // true
-```
-you can use it to check whether two tasks are equal / find specified task
-
-
-## Receipts
-
-### how to integrate with existing code
-what you need to do is to wrap your existing task executing function into a new `batchDoTasks`
-
-#### example 1: cache `fetch`
-suppose we use browser native `fetch` to send request, we can do so to make an improvement:
-
-```ts
-
-const fetchSchedule = new TaskSchedule({
-  async doTask(cfg: {resource: string, options?: RequestInit}) {
-    return await fetch(cfg.resource, cfg.options)
-  },
-  // 0 for forever
-  // set a minimum number 1 can disable cache after 1 millisecond
-  invalidAfter(cfg, result) {
-    // cache get request for 3s
-    if (!cfg.options || !cfg.options.method || cfg.options.method.toLowerCase() === 'get') {
-      // cache sys static config forever
-      if (/\/sys\/static-config$/.test(cfg.resource)) return 0
-      return 3000
-    }
-    // disable other types request
-    return 1
+  try {
+    await squares.dispatch(-1)
+  } catch (error) {
+    console.error(error)
   }
-})
-
-const betterFetch = (resource: string, options?: RequestInit) => {
-  return fetchSchedule.dispatch({resource, options})
 }
 
-// than you can replace fetch with betterFetch
+main().catch(console.error)
 ```
 
-with those codes above:
-1. you can remove redundant request(requests with same parameters at same time will be reduced to one, this may have some side effects)
-2. get request can be cached in a short time
+### `cleanCache()`
 
+Request clearing of cached results. When work is pending or running, clearing takes
+effect after all that work finishes. It does not cancel execution. When idle,
+clearing is immediate; the next dispatch executes again.
 
-#### example 2: deal with `getUsers`
-suppose we have a method `getUsers` defined as follows:
+### Task identity
 
-```ts
-// support max 5 users at a time
-getUsers(userIds: string[]) => Promise<[{code: string, message: string, id?: string, name?: string, email?: string}]>
-``` 
+Default equality compares plain objects and arrays deeply, including cyclic values,
+and compares Dates and RegExps by value. Map, Set, typed arrays and class instances
+use reference identity. Supply `isSameTask` for domain-specific equality. These
+boundaries describe the upcoming release; 1.0.1 has a less complete comparator.
 
-then we can implement a batch version:
-```ts
-async function batchGetUsers(userIds: string[]): Promise<Array<[string, {id: string, name: string, email: string}]>> {
-  // there is no need to try/catch, errors will be handled properly
-  const users = await getUsers(userIds)
-  // convert invalid users to error
-  return users.map(user => (user.code === 'failed' ? new Error(user.message) : user))
-}
+**Unreleased:** use `getTaskKey` for larger workloads with a natural identity,
+for example `task => JSON.stringify([task.tenantId, task.userId])`. Equal keys share
+execution and cached results, using the first task's parameters. Include every
+input that affects the result. Keys must be pure and stable; avoid mutating tasks
+after dispatch. Reuse symbols rather than creating one per call. Keys use `Map`
+equality (`1` differs from `'1'`, `NaN` equals `NaN`, `0` equals `-0`).
 
-const getUserSchedule = new TaskSchedule({
-  maxBatchCount: 5,
-  batchDoTasks: batchGetUsers,
-  // cache user info forever
-  invalidAfter: 0,
-})
+### Static utilities
 
-const result = await Promise.all([
-  getUserSchedule.dispatch(['user1', 'user2', 'user3', 'user4', 'user5', 'user6']),
-  getUserSchedule.dispatch(['user3', 'user2'])
-  getUserSchedule.dispatch(['user6', 'user7', 'user8', 'user9', 'user10'])
-  getUserSchedule.dispatch(['user2', 'user6', 'user9'])
-])
-// only 2 requests will be sent via getUsers with userIds ['user1', 'user2', 'user3', 'user4', 'user5'] and ['user6', 'user7', 'user8', 'user9', 'user10']
+- `TaskSchedule.isEqual(a, b)`: the default equality comparator.
+- `TaskSchedule.wrapError(value)`: preserve an `Error`, or wrap another thrown value
+  in an `Error` with an `original` property.
+- `TaskSchedule.runTaskExecutor(executor, ...args)`: resolve to a
+  `{ status: 'fulfilled', value }` or `{ status: 'rejected', reason }` object.
 
-// request combine won't works when using await separately
-const result1 = await getUserSchedule.dispatch(['user1', 'user2'])
-const result2 = await getUserSchedule.dispatch(['user3', 'user2'])
+## Performance and development
+
+```sh
+yarn install --frozen-lockfile
+yarn typecheck
+yarn test
+yarn test:perf
+yarn benchmark
 ```
 
-If you got a batch version function, you just need to make sure it throw an error when error occurred.
+The performance suite checks deterministic work counts. The benchmark compares the
+current implementation with the pre-refactor implementation and writes
+`perf-results.json`; elapsed times are diagnostic and depend on the machine.
+CI runs on Node 22 and 24 and uploads benchmark reports.
 
+See [performance and testing](https://github.com/oe/async-task-schedule/blob/main/docs/performance.md)
+for methodology, task-key guidance and cache-policy behavior.
+See the [changelog](https://github.com/oe/async-task-schedule/blob/main/CHANGELOG.md)
+for the changes awaiting release.
 
-### how to cool down massive requests at the same time
-by setting `taskExecStrategy` to `serial` and using smaller `maxBatchCount`(you can even set it to `1`), you can achieve this easily
+## License
 
-```ts
-const taskSchedule = new TaskSchedule({
-  ...,
-  taskExecStrategy: 'serial',
-  maxBatchCount: 2,
-})
-```
-
-
-
-## Performance and testing
-
-For many tasks or large object inputs, supply a stable, inexpensive `getTaskKey`:
-
-```ts
-const users = new TaskSchedule({
-  doTask: async (task: { tenantId: string; userId: string }) => {
-    return fetch(`/tenants/${task.tenantId}/users/${task.userId}`)
-  },
-  getTaskKey: task => JSON.stringify([task.tenantId, task.userId]),
-})
-```
-
-Keys take precedence over `isSameTask`. Equal keys share execution and cached results;
-the first task's parameters are used. Include every input that affects the result
-(e.g. tenant, user, permissions, or query options). Keys must be pure and stable
-throughout execution and caching; do not mutate task identity after dispatch.
-A symbol must be reused, rather than created anew on each call. Keys use `Map` equality:
-`1` differs from `'1'`, `NaN` equals `NaN`, and `0` equals `-0`.
-Without `getTaskKey`, deep comparison or your custom `isSameTask` continues to apply.
-
-Each unique task has one record and a shared result Promise. Duplicate requests
-subscribe to that result; completing a task no longer scans every waiting request.
-The indexed path avoids linear searches for pending, running, and cached tasks.
-Numeric TTLs skip cache scans until the next expiration; function TTL policies are
-evaluated on completion and on subsequent cache access. Cache expiration and
-failed-task retry eligibility apply even while unrelated work is active. Existing
-waiters keep their original result Promise after a cache entry expires.
-`cleanCache()` still waits for pending/running work before clearing entries.
-
-Default deep comparison supports plain objects, arrays (including cyclic values),
-Dates, and RegExps. Other objects such as Map, Set, typed arrays, and class instances
-use reference identity; supply a task key or custom comparator when those inputs
-need semantic equality. An array passed to `dispatch` always means multiple tasks;
-wrap an array-valued single task in an object.
-
-If a TTL policy throws during completion, that task settles with an Error (a single
-request rejects, and a multi-task request receives an Error entry). If it throws
-on later cache access, the dispatch rejects and that cache entry is removed.
-Neither path leaves background rejections or unresolved task records.
-
-Run `yarn test` for behavior tests, deterministic performance regression budgets,
-and coverage; `yarn test:perf` runs just the performance regression suite.
-`yarn typecheck` checks source and test/type assertions. `yarn benchmark` builds
-the library and compares it with the indexed pre-refactor commit
-`f2e07d2c2e358c634a5fb075163fdbc2ef353ccd` in this repository (Git history is required).
-It covers batch, individual, overlapping, and serial requests at 100/500/1000
-unique tasks, verifies outputs and execution counts, and records cold/hot-cache
-five-run median timings and key-call counts in `perf-results.json`.
-
-CI on Node 22/24 gates deterministic work budgets: one key extraction per submitted
-item, no completion-time identity lookups, and one execution per distinct task.
-It also runs the elapsed-time benchmark and uploads its JSON report for comparison.
-Elapsed-time measurements include timer and Promise overhead; they are diagnostic,
-not machine-independent pass/fail thresholds. No runtime dependencies are added.
-
-`maxBatchCount` remains the batch size, not a global concurrency limit in parallel
-mode. Unlimited caching can retain results indefinitely; use a TTL or `cleanCache()`
-when appropriate. The public API and batching strategies remain unchanged.
+[MIT](./LICENSE)
