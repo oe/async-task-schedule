@@ -10,6 +10,7 @@
     "benchmark": "npm run build && node scripts/benchmark.cjs",
     "typecheck": "tsc --noEmit && tsc --project tsconfig.test.json",
     "test": "vitest run --coverage",
+    "test:perf": "vitest run test/performance.spec.ts",
     "release": "yarn test && yarn build && yarn publish"
   },
   "keywords": [

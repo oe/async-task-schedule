@@ -182,22 +182,26 @@ describe('async-task-schedule', () => {
       expect(countOf1).toEqual(1)
     })
 
-    it('get cached error result', async () => {
+    it('clears cached successes', async () => {
+      let calls = 0
       const at = new AsyncTask({
         doTask(n: number) {
+          ++calls
           return n * n
         },
         retryWhenFailed: false
       })
       await at.dispatch([1,2,3])
       at.cleanCache()
-      // @ts-ignore
-      expect(at.doneTaskMap.length).toBe(0)
+      await expect(at.dispatch(1)).resolves.toBe(1)
+      expect(calls).toBe(4)
     })
 
     it('delay clean cache', async () => {
+      let calls = 0
       const at = new AsyncTask({
         doTask(n: number) {
+          ++calls
           return n * n
         },
         retryWhenFailed: false
@@ -207,8 +211,9 @@ describe('async-task-schedule', () => {
       const result2 = at.dispatch([1,2,3, 7, 0, 1, 10])
       await result1
       await result2
-      // @ts-ignore
-      expect(at.doneTaskMap.length).toBe(0)
+      const previousCalls = calls
+      await expect(at.dispatch([1, 2, 3])).resolves.toEqual([1, 4, 9])
+      expect(calls).toBe(previousCalls + 3)
     })
 
   })
@@ -227,8 +232,6 @@ describe('async-task-schedule', () => {
       await at.dispatch([1,2,3,4])
       await delay(20)
       await at.dispatch(1)
-      // @ts-ignore
-      expect(at.doneTaskMap.length).toEqual(1)
       expect(task1Count).toEqual(2)
     })
 
@@ -245,8 +248,6 @@ describe('async-task-schedule', () => {
       await at.dispatch([1,2,3,4])
       await delay(20)
       await at.dispatch(1)
-      // @ts-ignore
-      expect(at.doneTaskMap.length).toEqual(4)
       expect(task1Count).toEqual(1)
     })
 
@@ -274,8 +275,6 @@ describe('async-task-schedule', () => {
       await delay(20)
       await at.dispatch(1)
       
-      // @ts-ignore
-      expect(at.doneTaskMap.length).toEqual(1)
       expect(callCount[1]).toEqual(1)
       expect(callCount[2]).toEqual(3)
     })

@@ -17,6 +17,8 @@ jobs:
         node: [22, 24]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -26,7 +28,12 @@ jobs:
         run: yarn install --frozen-lockfile
       - name: Typecheck
         run: yarn typecheck
-      - name: Test
+      - name: Test including performance regression budgets
         run: yarn test
-      - name: Build library
-        run: yarn build
+      - name: Benchmark against the pre-refactor implementation
+        run: yarn benchmark
+      - name: Upload performance measurements
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-node-${{ matrix.node }}
+          path: perf-results.json
