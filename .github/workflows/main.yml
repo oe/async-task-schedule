@@ -32,6 +32,8 @@ jobs:
         run: yarn test
       - name: Benchmark against the pre-refactor implementation
         run: yarn benchmark
+      - name: Check packed imports and legacy TypeScript consumers
+        run: node scripts/check-package.cjs
       - name: Upload performance measurements
         uses: actions/upload-artifact@v4
         with:

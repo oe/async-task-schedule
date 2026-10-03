@@ -237,6 +237,7 @@ yarn install --frozen-lockfile
 yarn typecheck
 yarn test
 yarn test:perf
+yarn test:package
 yarn benchmark
 ```
 
@@ -249,6 +250,10 @@ See [performance and testing](https://github.com/oe/async-task-schedule/blob/mai
 for methodology, task-key guidance and cache-policy behavior.
 See the [changelog](https://github.com/oe/async-task-schedule/blob/main/CHANGELOG.md)
 for the changes awaiting release.
+Before upgrading from 1.0.1, read the
+[upgrade notes](https://github.com/oe/async-task-schedule/blob/main/docs/upgrading.md)
+for corrected error, batch-execution and equality behavior. Existing import forms
+and package paths are retained.
 
 ## License
 

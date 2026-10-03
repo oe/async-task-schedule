@@ -13,6 +13,9 @@
 - Compare cyclic plain objects and arrays safely; use reference identity for
   opaque objects such as Map, Set and class instances.
 - Correct the built package entry points and include generated TypeScript declarations.
+- Retain the published `dist/index.js` and `dist/types.d.ts` paths, CommonJS
+  `import = require` syntax, and the structural public instance type. Check real
+  packed consumers in CI.
 - Expand behavior and type coverage, add deterministic performance regression
   tests, and benchmark against the pre-refactor implementation in CI.
 - Rewrite the README around request deduplication, batching and TTL caching,
@@ -21,3 +24,6 @@
 
 This section describes changes awaiting release. The latest published npm version
 is 1.0.1 (2024-03-21).
+
+The public signatures are retained, but some bug fixes change observable behavior.
+See [upgrade notes](docs/upgrading.md) before releasing or upgrading.
