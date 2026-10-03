@@ -2,8 +2,8 @@
 
 [Back to the README](../readme.md)
 
-This document describes the upcoming release. `getTaskKey` is not available in
-npm 1.0.1; see the [changelog](../CHANGELOG.md).
+This document describes 1.1.0. `getTaskKey` is not available in
+1.0.1; see the [changelog](../CHANGELOG.md).
 For many tasks or large object inputs, supply a stable, inexpensive `getTaskKey`:
 
 ```ts

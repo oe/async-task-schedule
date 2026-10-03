@@ -1,6 +1,6 @@
 {
   "name": "async-task-schedule",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Batch and deduplicate async requests with TTL caching.",
   "main": "dist/index.js",
   "module": "dist/index.es.js",
@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit && tsc --project tsconfig.test.json",
     "test": "vitest run --coverage",
     "test:perf": "vitest run test/performance.spec.ts",
-    "release": "yarn test && yarn build && yarn publish",
+    "release": "npm run typecheck && npm test && npm run test:package && npm publish",
     "test:package": "npm run build && node scripts/check-package.cjs"
   },
   "keywords": [
@@ -32,7 +32,8 @@
   "private": false,
   "source": "src/index.ts",
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "devDependencies": {
     "@types/node": "^20.0.0",

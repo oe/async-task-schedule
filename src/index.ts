@@ -29,7 +29,7 @@ export interface IAsyncTaskOptions<Task, Result> {
   /**
    * task result caching duration(in milliseconds), default to 1000ms (1s)
    * >`undefined` or `0` for unlimited  
-   * >set to minimum value `1` to disable caching  
+   * >`1` is a one-millisecond TTL; in-flight tasks still share execution
    * >`function` to specified specified each task's validity
    * 
    * *cache is lazy cleaned after invalid*

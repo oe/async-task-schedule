@@ -1,6 +1,6 @@
 # Upgrading from 1.0.1
 
-These notes describe the proposed next release. It has not been published yet.
+These notes describe the changes in 1.1.0 relative to 1.0.1.
 
 ## Import and API compatibility
 
@@ -17,12 +17,12 @@ structural public instance type remain usable.
 Private runtime fields and the undocumented `defaultOptions` static field are
 implementation details. The refactor changes these internals.
 
-## Observable corrections
+## Observable corrections in 1.1.0
 
-The next release follows the documented behavior more closely. It is not a
+Version 1.1.0 follows the documented behavior more closely. It is not a
 guarantee of identical behavior for applications relying on bugs in 1.0.1.
 
-| Area | 1.0.1 behavior | Next release / upgrade action |
+| Area | 1.0.1 behavior | 1.1.0 / upgrade action |
 | --- | --- | --- |
 | Single-task failure | Could fulfill with an `Error` value. | Rejects. Use `try/catch` or `.catch()`; array dispatch still returns per-item errors. |
 | Parallel batch execution | Batches could execute serially even when configured as parallel. | Parallel batches start together. Set `taskExecStrategy: 'serial'` if the backend requires sequential requests. |

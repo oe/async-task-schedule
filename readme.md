@@ -17,10 +17,9 @@ TypeScript declarations are included; there are no runtime dependencies.
 npm install async-task-schedule
 ```
 
-The examples below use existing APIs unless marked **unreleased**. The latest npm
-release is currently 1.0.1; `getTaskKey` and the improvements in
-[PR #1](https://github.com/oe/async-task-schedule/pull/1) are awaiting publication.
-For the default TypeScript imports shown here with npm 1.0.1, enable
+Version 1.1.0 adds optional indexed task identity and fixes scheduling / cache behavior.
+See the [upgrade notes](https://github.com/oe/async-task-schedule/blob/main/docs/upgrading.md)
+when upgrading from 1.0.1. For the default TypeScript imports shown here, enable
 `esModuleInterop` in your `tsconfig.json`.
 
 ## Quick start: six calls, one batch
@@ -116,9 +115,9 @@ caller-specific mutation.
 
 ### Limit batch size and execute batches serially
 
-**Unreleased fix:** the upcoming version preserves `maxBatchCount` in serial mode.
+**Since 1.1.0:** serial mode preserves `maxBatchCount`.
 In npm 1.0.1, serial mode forces batches of one item, so this example's batch sizes
-require the upcoming release.
+require 1.1.0 or newer.
 
 ```ts
 import TaskSchedule from 'async-task-schedule'
@@ -157,7 +156,7 @@ Supply `doTask`, `batchDoTasks`, or both. If both are supplied, `batchDoTasks` t
 | `doTask(task)` | — | Execute one task; return a value or Promise. |
 | `batchDoTasks(tasks)` | — | Execute a batch; return an array or Promise of results / `Error` entries, in input order. |
 | `isSameTask(a, b)` | `TaskSchedule.isEqual` | Compare task inputs for deduplication and cache lookup. |
-| `getTaskKey(task)` **unreleased** | — | Stable string, number or symbol identity for indexed lookup; takes precedence over `isSameTask`. |
+| `getTaskKey(task)` | — | Stable string, number or symbol identity for indexed lookup; takes precedence over `isSameTask`. |
 | `maxBatchCount` | Unlimited | `0` or omitted means unlimited; otherwise use a positive integer. |
 | `taskExecStrategy` | `'parallel'` | `'parallel'` starts batches together; `'serial'` waits for each batch. In serial mode, `doTask` without a batch size runs one task at a time. |
 | `taskWaitingStrategy` | `'debounce'` | `'debounce'` resets the waiting window when new tasks arrive; `'throttle'` keeps a window measured from its first arrival. |
@@ -213,9 +212,9 @@ clearing is immediate; the next dispatch executes again.
 Default equality compares plain objects and arrays deeply, including cyclic values,
 and compares Dates and RegExps by value. Map, Set, typed arrays and class instances
 use reference identity. Supply `isSameTask` for domain-specific equality. These
-boundaries describe the upcoming release; 1.0.1 has a less complete comparator.
+boundaries apply since 1.1.0; 1.0.1 has a less complete comparator.
 
-**Unreleased:** use `getTaskKey` for larger workloads with a natural identity,
+Use `getTaskKey` for larger workloads with a natural identity,
 for example `task => JSON.stringify([task.tenantId, task.userId])`. Equal keys share
 execution and cached results, using the first task's parameters. Include every
 input that affects the result. Keys must be pure and stable; avoid mutating tasks
@@ -249,7 +248,7 @@ CI runs on Node 22 and 24 and uploads benchmark reports.
 See [performance and testing](https://github.com/oe/async-task-schedule/blob/main/docs/performance.md)
 for methodology, task-key guidance and cache-policy behavior.
 See the [changelog](https://github.com/oe/async-task-schedule/blob/main/CHANGELOG.md)
-for the changes awaiting release.
+for release history.
 Before upgrading from 1.0.1, read the
 [upgrade notes](https://github.com/oe/async-task-schedule/blob/main/docs/upgrading.md)
 for corrected error, batch-execution and equality behavior. Existing import forms

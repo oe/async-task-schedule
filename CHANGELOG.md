@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 — 2026-10-03
 
 - Add optional `getTaskKey` for indexed task deduplication and cache lookup.
 - Share one task record and result Promise per unique task, and consume serial
@@ -22,8 +22,9 @@
   with runnable examples and clearer cache / execution semantics.
 - Update package discovery metadata and include the MIT license text.
 
-This section describes changes awaiting release. The latest published npm version
-is 1.0.1 (2024-03-21).
-
 The public signatures are retained, but some bug fixes change observable behavior.
-See [upgrade notes](docs/upgrading.md) before releasing or upgrading.
+See [upgrade notes](docs/upgrading.md) before upgrading.
+
+## 1.0.1 — 2024-03-21
+
+- Previous npm release.
