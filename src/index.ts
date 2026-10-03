@@ -77,7 +77,7 @@ export default class AsyncTask<Task, Result> {
 
   /**
    * batch tasks executing strategy, default parallel
-   *  only works if maxBatchCount is specified and tasks more than maxBatchCount are executed
+   *  serial preserves maxBatchCount; doTask defaults to one task at a time
    *  
    * parallel: split all tasks into a list stride by maxBatchCount, exec them at the same time
    * serial: split all tasks into a list stride by maxBatchCount, exec theme one group by one group
@@ -117,9 +117,10 @@ export default class AsyncTask<Task, Result> {
    */
   private retryWhenFailed?: boolean
 
-  /**
-   * tasks ready to be executed
-   */
+  /** Tasks currently being executed, used to deduplicate new requests. */
+  private runningTasks: Task[] = []
+
+  /** Tasks ready to be executed. */
   private pendingTasks: Task[]
 
   /**
@@ -167,8 +168,9 @@ export default class AsyncTask<Task, Result> {
     this.batchDoTasks = userOptions.batchDoTasks
 
     this.taskExecStrategy = userOptions.taskExecStrategy
-    if (this.taskExecStrategy === 'serial') {
-      this.maxBatchCount = 1
+    if (this.maxBatchCount !== undefined && this.maxBatchCount !== 0
+      && (!Number.isInteger(this.maxBatchCount) || this.maxBatchCount < 1)) {
+      throw new Error('maxBatchCount must be a positive integer or 0 for unlimited')
     }
 
     this.retryWhenFailed = userOptions.retryWhenFailed
@@ -188,7 +190,8 @@ export default class AsyncTask<Task, Result> {
     this.cleanupTasks()
     try {
       const result = this.tryGetTaskResult(tasks)
-      return Promise.resolve(result)
+      if (!Array.isArray(tasks) && result instanceof Error) return Promise.reject(result)
+      return result
     } catch (error) {
       // note all tasks are cached, just created new tasks
     }
@@ -212,7 +215,7 @@ export default class AsyncTask<Task, Result> {
    */
   private cleanCacheIfNeeded() {
     if (!this.needCleanCache) return
-    if (this.pendingTasks.length || this.taskQueue.length) return
+    if (this.isTaskRunning || this.pendingTasks.length || this.taskQueue.length) return
     this.needCleanCache = false
     this.doneTaskMap = []
   }
@@ -238,6 +241,7 @@ export default class AsyncTask<Task, Result> {
     if (this.pendingTasks.length) {
       myTasks = myTasks.filter((f) => !this.hasTask(this.pendingTasks, f))
     }
+    myTasks = myTasks.filter((task) => !this.hasTask(this.runningTasks, task))
     // remove done tasks
     if (myTasks.length) {
       myTasks = myTasks.filter((f) => !this.getTaskResult(f))
@@ -261,50 +265,58 @@ export default class AsyncTask<Task, Result> {
   // whether task is running
   isTaskRunning = false
 
-  private runTasks() {
+  private async runTasks() {
     if (this.isTaskRunning || !this.pendingTasks.length) return
     this.isTaskRunning = true
-    if (this.batchDoTasks) {
-      this.runTaskWithBatchDoTasks()
-    } else {
-      this.runTasksWithDoTask()
-    }
-  }
-
-  private async runTasksWithDoTask() {
-    const taskItems = this.pendingTasks.splice(0, this.maxBatchCount || this.pendingTasks.length)
-    taskItems.forEach(async (task) => {
-      try {
-        const result = await this.doTask!(task)
-        this.updateResultMap([task], [result])
-      } catch (error) {
-        this.updateResultMap([task], AsyncTask.wrapError(error))
-      }
-      this.checkAllTasks()
-      if (this.pendingTasks.length) {
-        this.runTasksWithDoTask()
-      } else {
-        this.cleanupTasks()
-        this.isTaskRunning = false
-      }
-    })
-  }
-
-  private async runTaskWithBatchDoTasks() {
-    const taskItems = this.pendingTasks.splice(0, this.maxBatchCount || this.pendingTasks.length)
     try {
-      const result = await this.batchDoTasks!(taskItems)
-      this.updateResultMap(taskItems, result)
-    } catch (error) {
-      this.updateResultMap(taskItems, AsyncTask.wrapError(error))
-    }
-    this.checkAllTasks()
-    if (this.pendingTasks.length) {
-      this.runTaskWithBatchDoTasks()
-    } else {
-      this.cleanupTasks()
+      while (this.pendingTasks.length) {
+        if (this.taskExecStrategy === 'serial') {
+          const count = this.maxBatchCount || (this.batchDoTasks ? this.pendingTasks.length : 1)
+          const tasks = this.pendingTasks.splice(0, count)
+          this.runningTasks.push(...tasks)
+          await this.executeTasks(tasks)
+        } else {
+          const tasks = this.pendingTasks.splice(0)
+          this.runningTasks.push(...tasks)
+          const count = this.maxBatchCount || tasks.length
+          const batches: Array<Promise<void>> = []
+          for (let i = 0; i < tasks.length; i += count) {
+            batches.push(this.executeTasks(tasks.slice(i, i + count)))
+          }
+          await Promise.all(batches)
+        }
+      }
+    } finally {
       this.isTaskRunning = false
+      this.cleanupTasks()
     }
+  }
+
+  private async executeTasks(tasks: Task[]) {
+    if (this.batchDoTasks) {
+      try {
+        this.updateResultMap(tasks, await this.batchDoTasks(tasks))
+      } catch (error) {
+        this.updateResultMap(tasks, AsyncTask.wrapError(error))
+      }
+      this.finishTasks(tasks)
+    } else {
+      await Promise.all(tasks.map(async (task) => {
+        try {
+          this.updateResultMap([task], [await this.doTask!(task)])
+        } catch (error) {
+          this.updateResultMap([task], AsyncTask.wrapError(error))
+        }
+        this.finishTasks([task])
+      }))
+    }
+  }
+
+  private finishTasks(tasks: Task[]) {
+    this.runningTasks = this.runningTasks.filter((task) => !this.hasTask(tasks, task))
+    if (!this.runningTasks.length && !this.pendingTasks.length) this.isTaskRunning = false
+    this.checkAllTasks()
+    this.cleanupTasks()
   }
 
   /**
@@ -316,7 +328,11 @@ export default class AsyncTask<Task, Result> {
         const result = this.tryGetTaskResult(taskItem.tasks)
         // eslint-disable-next-line no-param-reassign
         taskItem.isDone = true
-        taskItem.resolve(result)
+        if (!Array.isArray(taskItem.tasks) && result instanceof Error) {
+          taskItem.reject(result)
+        } else {
+          taskItem.resolve(result)
+        }
       } catch (error) {
         // not found
       }
@@ -332,6 +348,7 @@ export default class AsyncTask<Task, Result> {
    * @param defaultResult default result if not found
    */
   private tryGetTaskResult(tasks: Task[] | Task): (Result | Error) | Array<Result | Error> {
+    if (Array.isArray(tasks) && !tasks.length) return []
     // no cached data and no default result provided
     if (!this.doneTaskMap.length) throw new Error('no done task')
 
@@ -384,7 +401,7 @@ export default class AsyncTask<Task, Result> {
   private cleanupTasks() {
     this.cleanCacheIfNeeded()
     // has unresolved tasks, unable to cleanup task
-    if (this.taskQueue.length) return
+    if (this.isTaskRunning || this.taskQueue.length) return
     // nothing to cleanup
     if (!this.doneTaskMap.length) return
     // no need to remove outdated or failed tasks
@@ -442,16 +459,20 @@ export default class AsyncTask<Task, Result> {
     // for nan
     if (typeA === 'number' && isNaN(a) && isNaN(b)) return true
     // none object type, aka primitive types, are checked by the first line
-    if (typeA !== 'object') return false
+    if (typeA !== 'object' || a === null || b === null) return false
     // if one of them is regexp, check via regexp literal
-    if (a instanceof RegExp || b instanceof RegExp) return String(a) === String(b)
-    if (a instanceof Date || b instanceof Date) return String(a) === String(b)
+    if (a instanceof RegExp || b instanceof RegExp) {
+      return a instanceof RegExp && b instanceof RegExp && String(a) === String(b)
+    }
+    if (a instanceof Date || b instanceof Date) {
+      return a instanceof Date && b instanceof Date && AsyncTask.isEqual(a.getTime(), b.getTime())
+    }
     // only one is array
     if (Array.isArray(a) !== Array.isArray(b)) return false
     // @ts-ignore
     if (Object.keys(a).length !== Object.keys(b).length) return false
     // @ts-ignore
-    if (Object.keys(a).some(k => !AsyncTask.isEqual(a[k], b[k]))) return false
+    if (Object.keys(a).some(k => !Object.prototype.hasOwnProperty.call(b, k) || !AsyncTask.isEqual(a[k], b[k]))) return false
     return true
   }
 }

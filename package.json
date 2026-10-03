@@ -4,9 +4,10 @@
   "description": "schedule async tasks",
   "main": "dist/index.umd.js",
   "module": "dist/index.es.js",
-  "types": "dist/types.d.ts",
+  "types": "dist/index.d.ts",
   "scripts": {
     "build": "vite build",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run --coverage",
     "release": "yarn test && yarn build && yarn publish"
   },
@@ -22,6 +23,7 @@
   "license": "MIT",
   "private": false,
   "source": "src/index.ts",
+  "files": ["dist"],
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@vitest/coverage-v8": "2.1.5",

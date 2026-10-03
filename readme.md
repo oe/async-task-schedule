@@ -85,7 +85,7 @@ interface ITaskScheduleOptions<Task, Result> {
    * batchDoTasks should receive multitasks, and return result or error in order
    * one of batchDoTasks/doTask must be specified, batchDoTasks will take priority
    */
-  batchDoTasks: (tasks: Task[]) => Promise<Array<Result | Error>> | Array<Result | Error>
+  batchDoTasks?: (tasks: Task[]) => Promise<Array<Result | Error>> | Array<Result | Error>
 
   /**
    * action to do single task, can be async or sync function
@@ -102,33 +102,33 @@ interface ITaskScheduleOptions<Task, Result> {
 
   /**
    * max task count for batchDoTasks, default unlimited
-   *  undefined or 0 for unlimited
+   *  undefined or 0 for unlimited; otherwise a positive integer
    */
   maxBatchCount?: number
 
   /**
    * batch tasks executing strategy, default parallel
-   *  only works if maxBatchCount is specified and tasks more than maxBatchCount are executed
+   *  serial preserves maxBatchCount; doTask defaults to one task at a time
    *  
    * parallel: split all tasks into a list stride by maxBatchCount, exec them at the same time
    * serial: split all tasks into a list stride by maxBatchCount, exec theme one group by one group
    *    if serial specified, when tasks are executing, new comings will wait for them to complete
    *    it's especially useful to cool down task requests
    */
-  taskExecStrategy: 'parallel' | 'serial'
+  taskExecStrategy?: 'parallel' | 'serial'
 
   /**
    * task waiting strategy, default to debounce
    *  throttle: tasks will combined and dispatch every `maxWaitingGap`
    *  debounce: tasks will combined and dispatch util no more tasks in next `maxWaitingGap`
    */
-  taskWaitingStrategy: 'throttle' | 'debounce'
+  taskWaitingStrategy?: 'throttle' | 'debounce'
 
   /**
    * task waiting time in milliseconds, default 50ms
    *     differently according to taskWaitingStrategy
    */
-  maxWaitingGap: number
+  maxWaitingGap?: number
 
 
   /**
@@ -175,7 +175,7 @@ const result12 = await taskSchedule.dispatch(1) // 1
 
 ### dispatch(tasks: Task[]):Promise<Array<Result | Error>>
 dispatch multitasks at a time, will get response with corresponding order of `tasks`
-this method won't throw any error, it will fulfil even partially failed, you can check whether its success by `response instanceof Error`
+an empty task list resolves immediately to `[]`; this method won't throw task execution errors, it will fulfil even partially failed, you can check whether its success by `response instanceof Error`
 
 ```ts
 import TaskSchedule from 'async-task-schedule'
@@ -191,14 +191,14 @@ const taskSchedule = new TaskSchedule({
 
 const result = await taskSchedule.dispatch([1,2,3,1,2])
 // get first result
-const resultOf1 = result[0] // 1
-// second result is error
-const isError = result[1] instanceof Error // error object
+const resultOf1 = result[0] // Error
+// first result is error
+const isError = result[0] instanceof Error // true
 
 
 try {
   // will throw an error
-  const result2 = await taskSchedule.dispatch(2) // 1
+  const result2 = await taskSchedule.dispatch(1) // throws
 } catch(error) {
   console.warn(error)
 }
@@ -220,9 +220,9 @@ const taskSchedule = new TaskSchedule({
   invalidAfter: 0
 })
 
-const result1 = await taskSchedule.dispatch(1) // 1
+const result1 = await taskSchedule.dispatch(2) // 4
 try {
-  const result2 = await taskSchedule.dispatch(2),
+  const result2 = await taskSchedule.dispatch(1)
 } catch(error) {
   console.warn(error)
 }
@@ -251,7 +251,7 @@ await Promise.all([
 // clean all cached result
 taskSchedule.cleanCache()
 // task will execute again
-const result = await taskSchedule.dispatch(1),
+const result = await taskSchedule.dispatch(1)
 
 ```
 
@@ -293,7 +293,7 @@ const fetchSchedule = new TaskSchedule({
   // set a minimum number 1 can disable cache after 1 millisecond
   invalidAfter(cfg, result) {
     // cache get request for 3s
-    if (!cfg.options || !cfg.options.method || !cfg.options.method.toLowerCase() === 'get') {
+    if (!cfg.options || !cfg.options.method || cfg.options.method.toLowerCase() === 'get') {
       // cache sys static config forever
       if (/\/sys\/static-config$/.test(cfg.resource)) return 0
       return 3000
